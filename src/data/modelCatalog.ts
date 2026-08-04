@@ -3,57 +3,120 @@ export type ModelCatalogItem = {
   name: string;
   logo: string;
   desc: string;
+  limitations: string;
   fileName: string;
   byteSize: number;
   minRam: number;
   priority: number;
 };
+
 export const MODEL_CATALOG: ModelCatalogItem[] = [
+  {
+    id: 'bartowski/SmolLM2-360M-Instruct-GGUF',
+    name: 'SmolLM2 360M',
+    logo: 'https://github.com/huggingface.png',
+    desc: 'Featherlight fast chat for low-memory phones.',
+    limitations: 'Good for simple greetings & basic QA, but lacks deep reasoning or coding skills.',
+    fileName: 'SmolLM2-360M-Instruct-Q4_K_M.gguf',
+    byteSize: 270590880,
+    minRam: 0,
+    priority: 8,
+  },
   {
     id: 'bartowski/Qwen2.5-0.5B-Instruct-GGUF',
     name: 'Qwen 2.5 0.5B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/620760a26f7d2dc95dfc2164/2TOI3iXKwohdT6C8I4drx.png?w=200&h=200&f=face',
+    logo: 'https://github.com/QwenLM.png',
     desc: 'Tiny, fast, and reliable on almost any phone.',
+    limitations: 'Limited reasoning depth; best for short, direct questions.',
     fileName: 'Qwen2.5-0.5B-Instruct-Q4_K_M.gguf',
     byteSize: 397808192,
     minRam: 0,
     priority: 10,
   },
+
   {
     id: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
     name: 'Llama 3.2 1B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/1654016641505-62024564c76b1772652b3149.jpeg?w=200&h=200&f=face',
+    logo: 'https://github.com/meta-llama.png',
     desc: 'Compact general chat model with strong mobile speed.',
+    limitations: 'Great for quick chat & summarizing, but limited on heavy logic or long coding.',
     fileName: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
     byteSize: 807694464,
     minRam: 2,
     priority: 20,
   },
   {
+    id: 'bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF',
+    name: 'Qwen 2.5 Coder 1.5B',
+    logo: 'https://github.com/QwenLM.png',
+    desc: 'Specialized mobile coding & technical knowledge expert.',
+    limitations: 'Focused primarily on programming; average for general creative writing.',
+    fileName: 'Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf',
+    byteSize: 986048800,
+    minRam: 2,
+    priority: 28,
+  },
+  {
     id: 'bartowski/Qwen2.5-1.5B-Instruct-GGUF',
     name: 'Qwen 2.5 1.5B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/620760a26f7d2dc95dfc2164/2TOI3iXKwohdT6C8I4drx.png?w=200&h=200&f=face',
+    logo: 'https://github.com/QwenLM.png',
     desc: 'Best small-model balance for chat, coding, and speed.',
+    limitations: 'Balanced daily driver; complex multi-step math may occasionally fail.',
     fileName: 'Qwen2.5-1.5B-Instruct-Q4_K_M.gguf',
     byteSize: 986048768,
     minRam: 2,
     priority: 30,
   },
   {
+    id: 'bartowski/SmolLM2-1.7B-Instruct-GGUF',
+    name: 'SmolLM2 1.7B',
+    logo: 'https://github.com/huggingface.png',
+    desc: 'Ultra-responsive chat expert with high accuracy and speed.',
+    limitations: 'Great conversational flow, but moderate technical & deep reasoning knowledge.',
+    fileName: 'SmolLM2-1.7B-Instruct-Q4_K_M.gguf',
+    byteSize: 1055609824,
+    minRam: 2,
+    priority: 32,
+  },
+  {
+    id: 'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF',
+    name: 'DeepSeek R1 1.5B',
+    logo: 'https://github.com/deepseek-ai.png',
+    desc: 'State-of-the-art mobile reasoning and smooth conversational AI.',
+    limitations: 'Takes slightly longer to process initial reasoning thoughts before outputting.',
+    fileName: 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
+    byteSize: 1117320800,
+    minRam: 2,
+    priority: 35,
+  },
+  {
     id: 'bartowski/gemma-2-2b-it-GGUF',
     name: 'Gemma 2B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/1649681653581-v2.jpeg?w=200&h=200&f=face',
+    logo: 'https://github.com/google.png',
     desc: 'Lightning fast. Optimized for low memory footprint.',
+    limitations: 'Strict Google safety guardrails; moderate depth on niche academic topics.',
     fileName: 'gemma-2-2b-it-IQ3_M.gguf',
     byteSize: 1393561440,
     minRam: 3,
     priority: 40,
   },
   {
+    id: 'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF',
+    name: 'Qwen 2.5 Coder 3B',
+    logo: 'https://github.com/QwenLM.png',
+    desc: 'Powerful mobile coding and software engineering expert.',
+    limitations: 'Requires 4GB+ RAM. Technical coding focus rather than casual conversation.',
+    fileName: 'Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf',
+    byteSize: 1929903360,
+    minRam: 4,
+    priority: 48,
+  },
+  {
     id: 'bartowski/Qwen2.5-3B-Instruct-GGUF',
     name: 'Qwen 2.5 3B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/620760a26f7d2dc95dfc2164/2TOI3iXKwohdT6C8I4drx.png?w=200&h=200&f=face',
+    logo: 'https://github.com/QwenLM.png',
     desc: 'Stronger reasoning while still practical on midrange devices.',
+    limitations: 'Requires 4GB+ RAM; higher battery usage during continuous generation.',
     fileName: 'Qwen2.5-3B-Instruct-Q4_K_M.gguf',
     byteSize: 1929903264,
     minRam: 4,
@@ -62,8 +125,9 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
   {
     id: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
     name: 'Llama 3.2 3B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/1654016641505-62024564c76b1772652b3149.jpeg?w=200&h=200&f=face',
+    logo: 'https://github.com/meta-llama.png',
     desc: 'Capable compact model for richer offline conversations.',
+    limitations: 'Requires 4GB+ RAM; slower speed on older 2GB/3GB processors.',
     fileName: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
     byteSize: 2019377696,
     minRam: 4,
@@ -72,8 +136,9 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
   {
     id: 'bartowski/Phi-3.5-mini-instruct-GGUF',
     name: 'Phi 3.5 Mini',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/62303d74d79b3cb7b9c87f81/Y6n8wUzWfX5qPUMX3L0Fc.png?w=200&h=200&f=face',
+    logo: 'https://github.com/microsoft.png',
     desc: 'Great compact coding and reasoning model.',
+    limitations: 'Requires 6GB+ RAM; strict prompt structure required for best output.',
     fileName: 'Phi-3.5-mini-instruct-Q4_K_M.gguf',
     byteSize: 2393232672,
     minRam: 6,
@@ -82,39 +147,71 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
   {
     id: 'TheBloke/Mistral-7B-Instruct-v0.2-GGUF',
     name: 'Mistral 7B',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/647a46f25381fbcda2149b2c/R0O0AWe-9x3x5P-q6E2Zc.png?w=200&h=200&f=face',
-    desc: 'Balanced performance and speed.',
+    logo: 'https://github.com/mistralai.png',
+    desc: 'Balanced performance and general knowledge.',
+    limitations: 'Requires 6GB+ RAM & fast storage; heavy battery & memory usage.',
     fileName: 'mistral-7b-instruct-v0.2.Q3_K_L.gguf',
     byteSize: 3822024992,
     minRam: 6,
     priority: 80,
   },
   {
-    id: 'MaziyarPanahi/Meta-Llama-3-8B-Instruct-GGUF',
-    name: 'Llama 3 (8B)',
-    logo: 'https://aeiljuispo.cloudimg.io/v7/https://cdn-uploads.huggingface.co/production/uploads/1654016641505-62024564c76b1772652b3149.jpeg?w=200&h=200&f=face',
-    desc: 'Highly capable. Best for complex reasoning tasks.',
-    fileName: 'Meta-Llama-3-8B-Instruct.Q3_K_L.gguf',
-    byteSize: 4322469088,
+    id: 'bartowski/Qwen2.5-7B-Instruct-GGUF',
+    name: 'Qwen 2.5 7B',
+    logo: 'https://github.com/QwenLM.png',
+    desc: 'World-class high knowledge, science, math, and reasoning expert.',
+    limitations: 'Requires 6GB+ RAM; slower response time on non-flagship chipsets.',
+    fileName: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+    byteSize: 4683074240,
+    minRam: 6,
+    priority: 85,
+  },
+  {
+    id: 'bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF',
+    name: 'DeepSeek R1 8B',
+    logo: 'https://github.com/deepseek-ai.png',
+    desc: 'Deep reasoning SOTA powerhouse for complex knowledge tasks.',
+    limitations: 'Requires 8GB+ RAM; heavy processing load with longer initial think time.',
+    fileName: 'DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf',
+    byteSize: 4920736608,
+    minRam: 8,
+    priority: 88,
+  },
+  {
+    id: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
+    name: 'Llama 3.1 8B',
+    logo: 'https://github.com/meta-llama.png',
+    desc: 'Meta flagship high-knowledge model for complex intelligence.',
+    limitations: 'Requires 8GB+ RAM; heavy download (~4.9GB) & high memory consumption.',
+    fileName: 'Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf',
+    byteSize: 4920739232,
     minRam: 8,
     priority: 90,
   },
+  {
+    id: 'bartowski/gemma-2-9b-it-GGUF',
+    name: 'Gemma 2 9B',
+    logo: 'https://github.com/google.png',
+    desc: 'Google flagship open knowledge & deep reasoning engine.',
+    limitations: 'Requires 8GB+ RAM; largest download size (~5.7GB).',
+    fileName: 'gemma-2-9b-it-Q4_K_M.gguf',
+    byteSize: 5761057728,
+    minRam: 8,
+    priority: 95,
+  },
 ];
+
 export const getModelDownloadUrl = (model: ModelCatalogItem) =>
-  `https://huggingface.co/${model.id}/resolve/main/${encodeURIComponent(
-    model.fileName,
-  )}`;
-export const getModelTaskId = (
-  model: Pick<ModelCatalogItem, 'id' | 'fileName'>,
-) => `model_dl_${model.id}_${model.fileName}`.replace(/[^a-zA-Z0-9]/g, '_');
+  `https://huggingface.co/${model.id}/resolve/main/${encodeURIComponent(model.fileName)}`;
+
+export const getModelTaskId = (model: Pick<ModelCatalogItem, 'id' | 'fileName'>) =>
+  `model_dl_${model.id}_${model.fileName}`.replace(/[^a-zA-Z0-9]/g, '_');
+
 export const formatModelSize = (bytes: number) =>
   `${(bytes / 1000 / 1000 / 1000).toFixed(2)} GB`;
-export const findCatalogModel = (
-  modelId?: string | null,
-  modelName?: string | null,
-) =>
-  MODEL_CATALOG.find(
-    model => model.id === modelId || model.name === modelName,
-  ) ?? MODEL_CATALOG[0];
+
+export const findCatalogModel = (modelId?: string | null, modelName?: string | null) =>
+  MODEL_CATALOG.find(model => model.id === modelId || model.name === modelName) ?? MODEL_CATALOG[0];
+
 export const getRequiredStorageGB = (bytes: number) =>
   bytes / 1000 / 1000 / 1000 + 1;

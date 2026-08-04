@@ -33,7 +33,7 @@ const Navbar = () => {
           <button onClick={() => scrollToSection('usage')} className="nav-link-btn">Usage</button>
           <a href="/blog" className="nav-link-anchor">Blog</a>
           <a
-            href="https://github.com/sanketpadhyal/Rivo-Agent/releases/download/v1.0.0/rivo-agent.apk"
+            href="https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.0.0/rivo-agent-v2.apk"
             className="nav-download-btn"
           >
             <Download size={16} strokeWidth={2.5} />

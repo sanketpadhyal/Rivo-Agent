@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { BackHandler, View, StyleSheet, LogBox } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import SplashScreen from './src/screens/SplashScreen';
+import React, {useState, useEffect} from 'react';
+import {BackHandler, View, StyleSheet, LogBox} from 'react-native';
+import {SafeAreaProvider} from 'react-native-safe-area-context';
 import LoginScreen from './src/screens/LoginScreen';
 import SignupScreen from './src/screens/SignupScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -9,111 +8,92 @@ import ChatScreen from './src/screens/ChatScreen';
 import OnboardingScreen from './src/screens/OnboardingScreen';
 import DownloadScreen from './src/screens/DownloadScreen';
 import ModelReadyScreen from './src/screens/ModelReadyScreen';
-import { Colors } from './src/theme/colors';
-import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
+import {Colors} from './src/theme/colors';
+import auth, {FirebaseAuthTypes} from '@react-native-firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getSelectedInstalledModel } from './src/utils/modelInstallStatus';
+import {getSelectedInstalledModel} from './src/utils/modelInstallStatus';
 import ProfessionalAlert from './src/components/ProfessionalAlert';
-type Screen =
-  | 'splash'
-  | 'login'
-  | 'signup'
-  | 'home'
-  | 'chat'
-  | 'onboarding'
-  | 'download'
-  | 'modelReady';
-let splashShown = false;
+
+type Screen = 'login' | 'signup' | 'home' | 'chat' | 'onboarding' | 'download' | 'modelReady';
+
 const getPostAuthScreen = async (): Promise<Screen> => {
   const hasOnboarded = await AsyncStorage.getItem('hasOnboarded');
+
   try {
     const installedModel = await getSelectedInstalledModel();
     if (hasOnboarded === 'true' && installedModel) {
       return 'chat';
     }
+
     if (installedModel) {
       return 'modelReady';
     }
   } catch (error) {
     console.warn('App: failed to inspect completed model download:', error);
   }
+
   return 'onboarding';
 };
+
 function App(): React.JSX.Element {
-  const [screen, setScreen] = useState<Screen>(splashShown ? 'home' : 'splash');
+  const [screen, setScreen] = useState<Screen>('home');
   const [user, setUser] = useState<FirebaseAuthTypes.User | null>(null);
   const [initializing, setInitializing] = useState(true);
   const [showExitAlert, setShowExitAlert] = useState(false);
+
   useEffect(() => {
     LogBox.ignoreAllLogs(true);
   }, []);
+
   useEffect(() => {
     const subscriber = auth().onAuthStateChanged(async userState => {
       setUser(userState);
-      if (initializing) setInitializing(false);
-      if (splashShown) {
-        if (userState) {
-          const nextScreen = await getPostAuthScreen();
-          if (
-            screen !== nextScreen &&
-            screen !== 'download' &&
-            screen !== 'modelReady'
-          ) {
-            setScreen(nextScreen);
-          }
-        } else if (
-          !userState &&
-          (screen === 'chat' ||
-            screen === 'onboarding' ||
-            screen === 'download' ||
-            screen === 'modelReady')
-        ) {
-          setScreen('home');
-        }
+      if (userState) {
+        const nextScreen = await getPostAuthScreen();
+        setScreen(nextScreen);
+      } else {
+        setScreen('home');
       }
+      if (initializing) setInitializing(false);
     });
-    return subscriber;
-  }, [initializing, screen]);
-  const handleSplashFinish = async () => {
-    splashShown = true;
-    if (user) {
-      setScreen(await getPostAuthScreen());
-    } else {
-      setScreen('home');
-    }
-  };
+    return subscriber; // unsubscribe on unmount
+  }, [initializing]);
+
   useEffect(() => {
-    const subscription = BackHandler.addEventListener(
-      'hardwareBackPress',
-      () => {
-        if (screen === 'login') {
-          setScreen('home');
-          return true;
-        }
-        if (screen === 'signup') {
-          setScreen(user ? 'onboarding' : 'home');
-          return true;
-        }
-        if (screen === 'onboarding') {
-          setScreen('home');
-          return true;
-        }
-        if (screen === 'modelReady') {
-          setScreen('onboarding');
-          return true;
-        }
-        if (screen === 'download' || screen === 'splash') {
-          return true;
-        }
-        return false;
-      },
-    );
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (screen === 'login') {
+        setScreen('home');
+        return true;
+      }
+
+      if (screen === 'signup') {
+        setScreen(user ? 'onboarding' : 'home');
+        return true;
+      }
+
+      if (screen === 'onboarding') {
+        setScreen('home');
+        return true;
+      }
+
+      if (screen === 'modelReady') {
+        setScreen('onboarding');
+        return true;
+      }
+
+      if (screen === 'download') {
+        return true;
+      }
+
+      return false;
+    });
+
     return () => subscription.remove();
   }, [screen, user]);
+
   return (
     <SafeAreaProvider>
       <View style={styles.root}>
-        {screen === 'splash' && <SplashScreen onFinish={handleSplashFinish} />}
         {screen === 'login' && (
           <LoginScreen
             onBack={() => setScreen('home')}
@@ -164,10 +144,12 @@ function App(): React.JSX.Element {
     </SafeAreaProvider>
   );
 }
+
 const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: Colors.bg,
   },
 });
+
 export default App;

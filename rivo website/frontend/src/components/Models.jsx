@@ -5,7 +5,9 @@ const Models = () => {
   const models = [
     { name: 'Qwen 2.5 0.5B', file: 'Qwen2.5-0.5B-Instruct-Q4_K_M.gguf', ram: 'Any RAM', size: '0.40 GB', tag: 'Fastest' },
     { name: 'Llama 3.2 1B', file: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf', ram: '2 GB RAM', size: '0.81 GB', tag: 'Recommended' },
-    { name: 'Qwen 2.5 1.5B', file: 'Qwen2.5-1.5B-Instruct-Q4_K_M.gguf', ram: '2 GB RAM', size: '0.99 GB', tag: 'Balanced' },
+    { name: 'Qwen 2.5 Coder 1.5B', file: 'Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf', ram: '2 GB RAM', size: '0.99 GB', tag: 'Coding Specialist' },
+    { name: 'DeepSeek R1 Distill 1.5B', file: 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf', ram: '2 GB RAM', size: '1.12 GB', tag: 'Reasoning' },
+    { name: 'SmolLM2 1.7B', file: 'SmolLM2-1.7B-Instruct-Q4_K_M.gguf', ram: '2 GB RAM', size: '1.06 GB', tag: 'Compact' },
     { name: 'Gemma 2B', file: 'gemma-2-2b-it-IQ3_M.gguf', ram: '3 GB RAM', size: '1.39 GB', tag: 'Heavy' },
     { name: 'Qwen 2.5 3B', file: 'Qwen2.5-3B-Instruct-Q4_K_M.gguf', ram: '4 GB RAM', size: '1.93 GB', tag: 'Pro' },
     { name: 'Llama 3.2 3B', file: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf', ram: '4 GB RAM', size: '2.02 GB', tag: 'Pro' },

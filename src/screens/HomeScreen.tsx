@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, {useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -13,19 +13,43 @@ import {
   Linking,
   BackHandler,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors } from '../theme/colors';
-import { User, ArrowUpRight, Folder, Mail } from 'lucide-react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {Colors} from '../theme/colors';
+import {User, Globe, Folder, Mail, ChevronRight} from 'lucide-react-native';
+import Svg, {Path} from 'react-native-svg';
+
+const GithubIcon: React.FC<{color?: string; size?: number}> = ({
+  color = '#0A84FF',
+  size = 15,
+}) => (
+  <Svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke={color}
+    strokeWidth={2.2}
+    strokeLinecap="round"
+    strokeLinejoin="round">
+    <Path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+    <Path d="M9 18c-4.51 2-5-2-7-2" />
+  </Svg>
+);
+
 const INFO_ACCENT_BLUE = '#0A84FF';
+const INFO_KEYWORD_GREEN = '#34C759';
+
 interface Props {
   onGetStarted: () => void;
   onBack: () => void;
 }
-const { width } = Dimensions.get('window');
+
+const {width} = Dimensions.get('window');
 const SLIDER_WIDTH = width - 64;
 const THUMB_SIZE = 52;
 const SLIDE_THRESHOLD = SLIDER_WIDTH - THUMB_SIZE - 16;
-const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
+
+const HomeScreen: React.FC<Props> = ({onGetStarted, onBack}) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const tagsFadeAnim = useRef(new Animated.Value(0)).current;
@@ -33,27 +57,32 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
   const swipeX = useRef(new Animated.Value(0)).current;
   const shimmerAnim = useRef(new Animated.Value(0)).current;
   const insets = useSafeAreaInsets();
+
   const [isInfoOpen, setIsInfoOpen] = React.useState(false);
-  const infoX = useRef(new Animated.Value(width)).current;
+  const infoAnim = useRef(new Animated.Value(0)).current;
+
   const openInfoModal = () => {
     setIsInfoOpen(true);
-    infoX.setValue(width);
-    Animated.timing(infoX, {
-      toValue: 0,
-      duration: 280,
-      easing: Easing.out(Easing.cubic),
+    infoAnim.setValue(0);
+    Animated.timing(infoAnim, {
+      toValue: 1,
+      duration: 380,
+      easing: Easing.bezier(0.16, 1, 0.3, 1),
       useNativeDriver: true,
     }).start();
   };
-  const closeInfoModal = useCallback(() => {
-    Animated.timing(infoX, {
-      toValue: width,
-      duration: 240,
-      easing: Easing.in(Easing.cubic),
+
+  const closeInfoModal = () => {
+    Animated.timing(infoAnim, {
+      toValue: 0,
+      duration: 320,
+      easing: Easing.bezier(0.25, 1, 0.5, 1),
       useNativeDriver: true,
     }).start(() => setIsInfoOpen(false));
-  }, [infoX]);
+  };
+
   useEffect(() => {
+    // Entrance animation
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -80,6 +109,8 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
         useNativeDriver: true,
       }),
     ]).start();
+
+    // Shimmer animation for the slider text
     Animated.loop(
       Animated.sequence([
         Animated.timing(shimmerAnim, {
@@ -97,6 +128,7 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
       ]),
     ).start();
   }, [fadeAnim, slideAnim, shimmerAnim, tagsFadeAnim, tagsSlideAnim]);
+
   useEffect(() => {
     const handleBackPress = () => {
       if (isInfoOpen) {
@@ -106,68 +138,104 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
       onBack();
       return true;
     };
-    const subscription = BackHandler.addEventListener(
-      'hardwareBackPress',
-      handleBackPress,
-    );
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => subscription.remove();
-  }, [closeInfoModal, isInfoOpen, onBack]);
+  }, [isInfoOpen, onBack]);
+
+  const clampedSwipeX = swipeX.interpolate({
+    inputRange: [0, SLIDE_THRESHOLD],
+    outputRange: [0, SLIDE_THRESHOLD],
+    extrapolate: 'clamp',
+  });
+
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dx) > 1,
+      onPanResponderGrant: () => {
+        swipeX.stopAnimation();
+      },
       onPanResponderMove: (_, gestureState) => {
-        const clampedX = Math.max(
-          0,
-          Math.min(gestureState.dx, SLIDE_THRESHOLD),
-        );
-        swipeX.setValue(clampedX);
+        const clamped = Math.max(0, Math.min(gestureState.dx, SLIDE_THRESHOLD));
+        swipeX.setValue(clamped);
       },
       onPanResponderRelease: (_, gestureState) => {
-        if (gestureState.dx >= SLIDE_THRESHOLD * 0.75) {
+        const currentX = (swipeX as any)._value || gestureState.dx;
+        if (currentX >= SLIDE_THRESHOLD * 0.5 || gestureState.vx > 0.3) {
           Animated.spring(swipeX, {
             toValue: SLIDE_THRESHOLD,
-            useNativeDriver: true,
-            bounciness: 2,
+            useNativeDriver: false,
+            bounciness: 0,
+            speed: 20,
           }).start(() => {
             onGetStarted();
           });
         } else {
           Animated.spring(swipeX, {
             toValue: 0,
-            useNativeDriver: true,
-            bounciness: 6,
+            useNativeDriver: false,
+            bounciness: 4,
+            speed: 20,
           }).start();
         }
       },
+      onPanResponderTerminate: () => {
+        Animated.spring(swipeX, {
+          toValue: 0,
+          useNativeDriver: false,
+          bounciness: 4,
+          speed: 20,
+        }).start();
+      },
     }),
   ).current;
-  const textOpacity = swipeX.interpolate({
+
+  const textOpacity = clampedSwipeX.interpolate({
     inputRange: [0, SLIDE_THRESHOLD * 0.5],
     outputRange: [1, 0],
     extrapolate: 'clamp',
   });
+
   const shimmerOpacity = shimmerAnim.interpolate({
     inputRange: [0, 0.5, 1],
     outputRange: [0.4, 1, 0.4],
   });
+
+  const homeScale = infoAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0.94],
+  });
+
+  const homeTranslateX = infoAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -width * 0.25],
+  });
+
+  const homeOpacity = infoAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0.5],
+  });
+
+  const infoTranslateX = infoAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [width, 0],
+  });
+
   return (
-    <View
-      style={[
-        styles.container,
-        {
-          paddingTop: insets.top,
-        },
-      ]}
-    >
+    <View style={[styles.container, {paddingTop: insets.top}]}>
       <Animated.View
         style={[
           styles.content,
           {
-            opacity: fadeAnim,
+            opacity: Animated.multiply(fadeAnim, homeOpacity),
+            transform: [
+              {scale: homeScale},
+              {translateX: homeTranslateX},
+            ],
           },
-        ]}
-      >
+        ]}>
+        {/* Top Header/Navbar */}
         <View style={styles.header}>
           <Image
             source={require('../assets/logo.png')}
@@ -187,14 +255,15 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
           </TouchableOpacity>
         </View>
 
+        {/* Center Content */}
         <ScrollView
           style={styles.mainScroll}
           contentContainerStyle={styles.mainScrollContent}
           showsVerticalScrollIndicator={false}
-          bounces={false}
-        >
+          bounces={false}>
           <View style={styles.centerContainer}>
             <View style={styles.imageWrapper}>
+              {/* Glow Behind Image */}
               <View style={styles.glow} />
               <Image
                 source={require('../assets/ai.png')}
@@ -206,39 +275,24 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
             <Animated.View
               style={[
                 styles.textContainer,
-                {
-                  transform: [
-                    {
-                      translateY: slideAnim,
-                    },
-                  ],
-                },
-              ]}
-            >
+                {transform: [{translateY: slideAnim}]},
+              ]}>
               <Text style={styles.title}>Rivo Agent</Text>
               <Text style={styles.subtitle}>On-Device Intelligence</Text>
               <Text style={styles.description}>
-                Use a <Text style={styles.keyword}>device-based AI model</Text>{' '}
-                that is incredibly <Text style={styles.keyword}>fast</Text> and
-                completely <Text style={styles.keyword}>offline</Text>. Zero{' '}
-                <Text style={styles.keyword}>storage usage</Text> with absolute{' '}
-                <Text style={styles.keyword}>privacy</Text>.
+                Use a <Text style={styles.keyword}>device-based AI model</Text> that is incredibly <Text style={styles.keyword}>fast</Text> and completely <Text style={styles.keyword}>offline</Text>. Zero <Text style={styles.keyword}>storage usage</Text> with absolute <Text style={styles.keyword}>privacy</Text>.
               </Text>
             </Animated.View>
 
+            {/* Feature Tags */}
             <Animated.View
               style={[
                 styles.tagsContainer,
                 {
                   opacity: tagsFadeAnim,
-                  transform: [
-                    {
-                      translateY: tagsSlideAnim,
-                    },
-                  ],
+                  transform: [{translateY: tagsSlideAnim}],
                 },
-              ]}
-            >
+              ]}>
               <View style={styles.tag}>
                 <View style={styles.tagIcon}>
                   <View style={styles.chatDot} />
@@ -264,50 +318,42 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
           </View>
         </ScrollView>
 
+        {/* Swipe to Get Started */}
         <Animated.View
           style={[
             styles.footer,
             {
-              transform: [
-                {
-                  translateY: slideAnim,
-                },
-              ],
-              paddingBottom: insets.bottom + 24,
+              transform: [{translateY: slideAnim}],
+              paddingBottom: Math.max(insets.bottom, 24) + 24,
             },
-          ]}
-        >
+          ]}>
           <View style={styles.sliderTrack}>
+            {/* Background Text */}
             <Animated.Text
               style={[
                 styles.sliderText,
-                {
-                  opacity: Animated.multiply(textOpacity, shimmerOpacity),
-                },
-              ]}
-            >
+                {opacity: textOpacity},
+              ]}>
               Swipe to get started
             </Animated.Text>
 
+            {/* Draggable Thumb */}
             <Animated.View
               style={[
                 styles.sliderThumb,
-                {
-                  transform: [
-                    {
-                      translateX: swipeX,
-                    },
-                  ],
-                },
+                {transform: [{translateX: clampedSwipeX}]},
               ]}
-              {...panResponder.panHandlers}
-            >
-              <Text style={styles.sliderArrow}>›</Text>
+              {...panResponder.panHandlers}>
+              <View style={styles.chevronRow}>
+                <ChevronRight color="#000000" size={20} strokeWidth={3} />
+                <ChevronRight color="#000000" size={20} strokeWidth={3} style={styles.chevronOverlap} />
+              </View>
             </Animated.View>
           </View>
         </Animated.View>
       </Animated.View>
 
+      {/* Info panel overlay slide-out */}
       {isInfoOpen && (
         <Animated.View
           style={[
@@ -315,25 +361,15 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
             {
               paddingTop: insets.top + 12,
               paddingBottom: insets.bottom + 16,
-              transform: [
-                {
-                  translateX: infoX,
-                },
-              ],
+              transform: [{translateX: infoTranslateX}],
             },
-          ]}
-        >
+          ]}>
           <View style={styles.infoHeader}>
             <TouchableOpacity
               style={styles.infoBackButton}
               activeOpacity={0.82}
-              onPress={closeInfoModal}
-            >
-              <Image
-                source={require('../assets/back.png')}
-                style={styles.infoBackIcon}
-                resizeMode="contain"
-              />
+              onPress={closeInfoModal}>
+              <Image source={require('../assets/back.png')} style={styles.infoBackIcon} resizeMode="contain" />
             </TouchableOpacity>
             <View style={styles.infoHeaderCopy}>
               <Text style={styles.infoEyebrow}>ABOUT RIVO</Text>
@@ -344,28 +380,22 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
           <ScrollView
             style={styles.infoScroll}
             contentContainerStyle={styles.infoContent}
-            showsVerticalScrollIndicator={false}
-          >
+            showsVerticalScrollIndicator={false}>
             <View style={styles.infoHero}>
-              <Image
-                source={require('../assets/logo.png')}
-                style={styles.infoLogoSmall}
-                resizeMode="contain"
-              />
+              <Image source={require('../assets/logo.png')} style={styles.infoLogoSmall} resizeMode="contain" />
               <View style={styles.infoHeroCopy}>
                 <Text style={styles.infoHeroTitle}>Rivo Agent</Text>
                 <Text style={styles.infoHeroText}>
                   We are importing models from{' '}
-                  <Text style={styles.infoHighlight}>Hugging Face</Text> and all
-                  agent work is done by{' '}
-                  <Text style={styles.infoHighlight}>Rivo</Text>.
+                  <Text style={styles.infoHighlight}>Hugging Face</Text> and all agent work is
+                  done by <Text style={styles.infoHighlight}>Rivo</Text>.
                 </Text>
               </View>
             </View>
 
             <View style={styles.infoSection}>
               <Text style={styles.infoSectionTitle}>Developer</Text>
-
+              
               <View style={styles.infoLine}>
                 <View style={styles.infoLineIconWrap}>
                   <User color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
@@ -377,34 +407,20 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() =>
-                  Linking.openURL('https://github.com/sanketpadhyal')
-                }
-              >
+                onPress={() => Linking.openURL('https://github.com/sanketpadhyal')}>
                 <View style={styles.infoLineIconWrap}>
-                  <ArrowUpRight
-                    color={INFO_ACCENT_BLUE}
-                    size={15}
-                    strokeWidth={2.4}
-                  />
+                  <GithubIcon color={INFO_ACCENT_BLUE} size={15} />
                   <Text style={styles.infoLineLabel}>GitHub</Text>
                 </View>
-                <Text style={styles.infoLineValue}>
-                  github.com/sanketpadhyal
-                </Text>
+                <Text style={styles.infoLineValue}>github.com/sanketpadhyal</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() => Linking.openURL('https://www.sanketpadhyal.in')}
-              >
+                onPress={() => Linking.openURL('https://www.sanketpadhyal.in')}>
                 <View style={styles.infoLineIconWrap}>
-                  <ArrowUpRight
-                    color={INFO_ACCENT_BLUE}
-                    size={15}
-                    strokeWidth={2.4}
-                  />
+                  <Globe color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
                   <Text style={styles.infoLineLabel}>Website</Text>
                 </View>
                 <Text style={styles.infoLineValue}>www.sanketpadhyal.in</Text>
@@ -413,48 +429,32 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() =>
-                  Linking.openURL('https://github.com/sanketpadhyal/Rivo-Agent')
-                }
-              >
+                onPress={() => Linking.openURL('https://github.com/sanketpadhyal/Rivo-Agent')}>
                 <View style={styles.infoLineIconWrap}>
-                  <Folder
-                    color={INFO_ACCENT_BLUE}
-                    size={15}
-                    strokeWidth={2.4}
-                  />
+                  <Folder color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
                   <Text style={styles.infoLineLabel}>Project repo</Text>
                 </View>
-                <Text style={styles.infoLineValue}>
-                  sanketpadhyal/Rivo-Agent
-                </Text>
+                <Text style={styles.infoLineValue}>sanketpadhyal/Rivo-Agent</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() =>
-                  Linking.openURL('mailto:sanketpadhyal3@gmail.com')
-                }
-              >
+                onPress={() => Linking.openURL('mailto:sanketpadhyal3@gmail.com')}>
                 <View style={styles.infoLineIconWrap}>
                   <Mail color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
                   <Text style={styles.infoLineLabel}>Support</Text>
                 </View>
-                <Text style={styles.infoLineValue}>
-                  sanketpadhyal3@gmail.com
-                </Text>
+                <Text style={styles.infoLineValue}>sanketpadhyal3@gmail.com</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.infoSection}>
               <Text style={styles.infoSectionTitle}>Source Status</Text>
               <Text style={styles.infoBody}>
-                This project is not{' '}
-                <Text style={styles.infoHighlight}>open source</Text>. The{' '}
+                This project is <Text style={styles.infoHighlight}>open source</Text>. The{' '}
                 <Text style={styles.infoHighlight}>GitHub repository</Text> is{' '}
-                <Text style={styles.infoHighlight}>private</Text> and maintained
-                by the developer.
+                <Text style={styles.infoHighlight}>public</Text> and maintained by the developer.
               </Text>
             </View>
           </ScrollView>
@@ -463,6 +463,7 @@ const HomeScreen: React.FC<Props> = ({ onGetStarted, onBack }) => {
     </View>
   );
 };
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -643,6 +644,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     borderWidth: 1,
     borderColor: '#2A2A2A',
+    position: 'relative',
+    overflow: 'hidden',
   },
   sliderText: {
     position: 'absolute',
@@ -660,12 +663,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000000',
+    shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
   },
-  sliderArrow: {
-    fontSize: 26,
-    fontFamily: 'SF-Pro-Rounded-Bold',
-    color: '#000000',
-    marginLeft: 2,
+  chevronRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chevronOverlap: {
+    marginLeft: -10,
   },
   infoPanel: {
     position: 'absolute',
@@ -675,6 +685,11 @@ const styles = StyleSheet.create({
     left: 0,
     zIndex: 100,
     backgroundColor: '#000000',
+    shadowColor: '#000000',
+    shadowOffset: {width: -8, height: 0},
+    shadowOpacity: 0.6,
+    shadowRadius: 20,
+    elevation: 25,
   },
   infoHeader: {
     minHeight: 58,
@@ -693,7 +708,7 @@ const styles = StyleSheet.create({
   infoBackIcon: {
     width: 28,
     height: 28,
-    tintColor: '#0A84FF',
+    tintColor: '#FFFFFF',
   },
   infoHeaderCopy: {
     flex: 1,
@@ -798,4 +813,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 });
+
 export default HomeScreen;
