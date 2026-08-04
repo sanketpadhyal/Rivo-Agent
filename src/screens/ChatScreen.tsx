@@ -51,6 +51,7 @@ import {
   Lock,
   Sparkles,
   Laptop,
+  Zap,
 } from 'lucide-react-native';
 import Svg, {Path} from 'react-native-svg';
 
@@ -341,7 +342,8 @@ const isIdentityFallback = (text: string, aiName: string) => {
 };
 
 const isCodeLikeResponse = (text: string) =>
-  /```|#include|#define|import\s+\w+|from\s+\w+\s+import|\bint\s+|\bdouble\s+|\bfloat\s+|\bchar\s+|\bvoid\s+|\bstruct\s+|\bclass\s+|\bpublic\s+|\bprivate\s+|\bprintf\(|\bstd::|\bcout\b|\breturn\s+|\bfunction\s+|\bdef\s+|\bconst\s+|\blet\s+|\bvar\s+|\bval\s+|\bfn\s+|\bpackage\s+|\busing\s+|\bnamespace\s+|;\s*$/m.test(text);
+  /```|#include|#define|import\s+\w+|from\s+\w+\s+import|\bint\s+|\bdouble\s+|\bfloat\s+|\bchar\s+|\bvoid\s+|\bstruct\s+|\bclass\s+|\bpublic\s+|\bprivate\s+|\bprintf\(|\bstd::|\bcout\b|\breturn\s+|\bfunction\s+|\bdef\s+|\bconst\s+|\blet\s+|\bvar\s+|\bval\s+|\bfn\s+|\bpackage\s+|\busing\s+|\bnamespace\s+|;\s*$/m.test(text) ||
+  /\b(code|program|script|c language|python|java|cpp|c\+\+|html|css|sql|rust|golang|typescript|javascript|react|kotlin|swift|function|algorithm)\b/i.test(text);
 
 const shouldRepairResponse = (prompt: string, response: string, aiName: string) =>
   !isCodeLikeResponse(response) &&
@@ -773,12 +775,14 @@ const MessageBubble = memo(({
   isThinkingHiding,
   item,
   thinkingLines,
+  modelLogo,
 }: {
   generationLabel: string;
   isLive: boolean;
   isThinkingHiding: boolean;
   item: ChatMessage;
   thinkingLines: string[];
+  modelLogo?: string;
 }) => {
   const appear = useRef(new Animated.Value(0)).current;
   const messageCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -876,7 +880,11 @@ const MessageBubble = memo(({
         <>
           {!isUser && (
             <View style={styles.agentGlyphSmall}>
-              <Image source={logoSource} style={styles.agentLogoSmall} resizeMode="contain" />
+              {modelLogo ? (
+                <Image source={{uri: modelLogo}} style={styles.modelLogoSmall} resizeMode="contain" />
+              ) : (
+                <Image source={logoSource} style={styles.agentLogoSmall} resizeMode="contain" />
+              )}
             </View>
           )}
           <View style={[styles.messageStack, isUser && styles.userMessageStack]}>
@@ -1088,6 +1096,16 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     () => findCatalogModel(activeModelId, modelName),
     [activeModelId, modelName],
   );
+
+  const hasCodingContentInThread = useMemo(() => {
+    if (isCurrentThreadCodingLocked) return true;
+    return messages.some(
+      msg =>
+        (msg.role === 'assistant' && isCodeLikeResponse(msg.text)) ||
+        (msg.role === 'notice' && msg.text.includes('Coding session')) ||
+        (msg.role === 'user' && isCodeLikeResponse(msg.text)),
+    );
+  }, [isCurrentThreadCodingLocked, messages]);
 
   // Callbacks
   const setMessagesAndRef = useCallback((nextMessages: ChatMessage[]) => {
@@ -2029,40 +2047,47 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       const conversationSnapshot = [...baseMessages, userMessage]
         .filter(item => item.role !== 'notice' && item.text.trim().length > 0)
         .slice(-activeKeepMessages);
+
+      const currentAiName = localAiName.trim() || aiName || 'Rivo';
+      const currentPersonality = localAiPersonality.trim() || aiPersonality || 'helpful, intelligent, friendly';
+      const currentEmojiQty = localAiEmojiQuantity || aiEmojiQuantity || 'medium';
+      const currentUserName = localName.trim() || rememberedName || '';
+      const currentMemoryText = localMemoryBullets.trim() || nextUserMemory || '';
+
       const emojiQuantityInstruction =
-        aiEmojiQuantity === 'none'
-          ? `EMOJI RULE: Do NOT use any emojis. Keep responses 100% text-based without emojis.`
-          : aiEmojiQuantity === 'low'
-          ? `EMOJI RULE: Use at most 1 emoji in the response, including signature emoji ${aiEmoji}.`
-          : aiEmojiQuantity === 'high'
-          ? `EMOJI RULE: HIGH EMOJI MODE. Use multiple emojis (${aiEmoji} and others) in every single sentence and response expressively! 🔥✨😊`
-          : `EMOJI RULE: Use 1-2 relevant emojis naturally, including signature emoji ${aiEmoji}.`;
+        currentEmojiQty === 'none'
+          ? `EMOJI RULE: Do NOT use any emojis under any circumstances. Keep responses 100% text-based without emojis.`
+          : currentEmojiQty === 'low'
+          ? `EMOJI RULE: Write complete text responses. Use at most 1 emoji attached to your text.`
+          : currentEmojiQty === 'high'
+          ? `EMOJI RULE: Write complete, helpful text sentences first. Attach 2-3 expressive emojis (such as ${aiEmoji} ✨) to your text. NEVER output emojis alone without full text.`
+          : `EMOJI RULE: Write helpful text sentences, incorporating 1-2 relevant emojis naturally (such as ${aiEmoji}).`;
 
       const systemContent = isPerformanceMode
         ? [
-            `You are ${aiName}, an offline AI assistant.`,
-            `Personality: ${aiPersonality}.`,
+            `STRICT ROLE & IDENTITY: You are ${currentAiName}, an offline AI assistant.`,
+            `REQUIRED PERSONALITY & VIBE: ${currentPersonality}. You MUST strictly adopt this persona in all your replies.`,
             emojiQuantityInstruction,
-            `Identity rule: your assistant name is ${aiName}. Never claim the user is ${aiName}.`,
-            rememberedName ? `User is ${rememberedName}.` : '',
-            nextUserMemory ? `User memory: ${nextUserMemory}.` : '',
-            activeMemorySummary ? `Context summary: ${activeMemorySummary}.` : '',
+            `IDENTITY RULE: Your assistant name is ${currentAiName}. Never claim the user is ${currentAiName}.`,
+            currentUserName ? `USER IDENTITY: The user's name is ${currentUserName}.` : '',
+            currentMemoryText ? `USER FACTS & PREFERENCES: ${currentMemoryText}.` : '',
+            activeMemorySummary ? `CONTEXT SUMMARY: ${activeMemorySummary}.` : '',
           ].filter(Boolean).join(' ')
         : [
-            `You are ${aiName}, a highly capable offline AI assistant companion.`,
-            `Personality: ${aiPersonality}. Adopt this persona in all your replies.`,
-            `Actual local model: ${modelName}.`,
-            `You can answer questions, brainstorm, and write code in any programming language. Provide complete code implementations when requested.`,
-            `Answer the user's questions or requests directly and thoroughly. Do not introduce yourself unless the user asks who you are.`,
-            `Never use generic fallback lines like "How can I assist you today?" after the user asks a concrete question.`,
+            `STRICT ROLE & IDENTITY: You are ${currentAiName}, a highly capable offline AI assistant companion.`,
+            `REQUIRED PERSONALITY & VIBE: ${currentPersonality}. You MUST strictly adopt this exact persona, tone, and vibe in all your replies.`,
+            `ACTUAL LOCAL MODEL ENGINE: ${modelName}.`,
+            `CAPABILITIES: You can answer questions, brainstorm, write prose, and generate complete code implementations.`,
+            `DIRECT RESPONSE RULE: Answer the user's request directly and thoroughly according to your configured personality.`,
             emojiQuantityInstruction,
-            `Identity rule: your assistant name is ${aiName}. Do not claim the user's name is ${aiName}.`,
-            `Memory rule: if the user asks their name or identity, answer from Known user memory exactly. Never answer that the user's name is ${aiName}.`,
-            rememberedName ? `The user's name is ${rememberedName}.` : '',
-            `If asked who the user is, answer only from Known user memory. If unknown, say you do not know yet.`,
-            `Be helpful, grounded, and natural. Do not invent names or facts.`,
-            nextUserMemory ? `Known user memory: ${nextUserMemory}` : 'Known user memory: none yet.',
-            activeMemorySummary ? `Compacted conversation memory:\n${activeMemorySummary}` : '',
+            `IDENTITY RULE: Your assistant name is ${currentAiName}. Never claim the user's name is ${currentAiName}.`,
+            currentUserName
+              ? `USER IDENTITY: The user's name is ${currentUserName}. Answer that the user is ${currentUserName} if asked.`
+              : `USER IDENTITY: The user's name is unknown unless specified in memory.`,
+            currentMemoryText
+              ? `KNOWN USER FACTS & PREFERENCES:\n${currentMemoryText}`
+              : 'KNOWN USER FACTS & PREFERENCES: None specified yet.',
+            activeMemorySummary ? `COMPACTED CONVERSATION MEMORY:\n${activeMemorySummary}` : '',
           ].filter(Boolean).join('\n');
 
       const llamaMessages: RNLlamaOAICompatibleMessage[] = [
@@ -2167,6 +2192,13 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           visibleGeneratedText(streamedText) ||
           messagesRef.current.find(item => item.id === activeAssistantId)?.text ||
           '';
+      }
+
+      // Guard against emoji-only responses (e.g. model outputting just "✨" or "🔥😊")
+      const trimmedFinal = finalText.trim();
+      const hasLettersOrDigits = /[a-zA-Z0-9\u0600-\u06FF\u0900-\u097F\u0400-\u04FF\u4E00-\u9FFF]/.test(trimmedFinal);
+      if (trimmedFinal && !hasLettersOrDigits) {
+        finalText = `Hello! ${trimmedFinal} How can I help you today?`;
       }
       let finalAssistantMessages: ChatMessage[] = [
         {
@@ -2304,14 +2336,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         await compactThreadMemory(context, completeMessages, nextUserMemory);
       }
 
-      if (!wasInterrupted && isCodeLikeResponse(finalText)) {
+      if (isCodeLikeResponse(prompt) || isCodeLikeResponse(finalText)) {
         setIsCurrentThreadCodingLocked(true);
-        const lockNotice: ChatMessage = {
-          id: `${now}_coding_lock_notice`,
-          role: 'notice',
-          text: '⚡ Coding session completed! To maintain peak GPU speed & optimal memory compaction, please start a new thread for your next question.',
-        };
-        updateMessagesAndRef(current => [...current, lockNotice]);
       }
     } catch (error) {
       if (stopRequestedRef.current) {
@@ -2345,6 +2371,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               item.text.trim().length > 0
             )),
         );
+        const isCodingInterrupted = isCodeLikeResponse(prompt) || isCodeLikeResponse(interruptedText);
+        if (isCodingInterrupted) {
+          setIsCurrentThreadCodingLocked(true);
+        }
         setStatus('Private offline');
         setResponsePhase('idle');
         return;
@@ -2614,9 +2644,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         isThinkingHiding={item.id === liveAssistantId && isThinkingFading}
         generationLabel="Thinking..."
         thinkingLines={item.id === liveAssistantId ? visibleThinkingLines : []}
+        modelLogo={activeCatalogModel?.logo}
       />
     ),
-    [isThinkingFading, liveAssistantId, visibleThinkingLines],
+    [isThinkingFading, liveAssistantId, visibleThinkingLines, activeCatalogModel?.logo],
   );
 
   const shouldShowEmptyOnboarding =
@@ -2769,7 +2800,11 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           ) : (
             <View style={styles.emptyState}>
               <View style={styles.emptyLogoMark}>
-                <Image source={logoSource} style={styles.emptyLogo} resizeMode="contain" />
+                {activeCatalogModel?.logo ? (
+                  <Image source={{uri: activeCatalogModel.logo}} style={styles.emptyModelLogo} resizeMode="contain" />
+                ) : (
+                  <Image source={logoSource} style={styles.emptyLogo} resizeMode="contain" />
+                )}
               </View>
               <View style={styles.promptStack}>
                 <Text style={styles.emptyTitle}>What should we solve?</Text>
@@ -2810,7 +2845,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
             paddingBottom: composerBottomPadding,
           },
         ]}>
-        {isCurrentThreadCodingLocked ? (
+        {hasCodingContentInThread ? (
           <View style={styles.lockedComposerContainer}>
             <TouchableOpacity
               activeOpacity={0.84}
@@ -3777,6 +3812,11 @@ const styles = StyleSheet.create({
     width: 41,
     height: 38,
   },
+  emptyModelLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+  },
   promptStack: {
     marginLeft: 20,
     marginBottom: 18,
@@ -3799,6 +3839,8 @@ const styles = StyleSheet.create({
     borderLeftColor: '#0AA550',
     paddingLeft: 14,
     paddingVertical: 2,
+    marginTop: 16,
+    marginBottom: 20,
   },
   emptyAlertText: {
     color: '#FFFFFF',
@@ -3825,9 +3867,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#0AA550',
     borderRadius: 24,
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     marginLeft: 20,
-    marginTop: 20,
+    marginTop: 4,
   },
   firstHiButtonText: {
     color: '#FFFFFF',
@@ -3859,6 +3901,11 @@ const styles = StyleSheet.create({
   agentLogoSmall: {
     width: 18,
     height: 17,
+  },
+  modelLogoSmall: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
   },
   messageStack: {
     maxWidth: '86%',

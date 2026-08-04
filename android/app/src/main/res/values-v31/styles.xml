@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Base application theme -->
+    <!-- Base application theme for API 31+ -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
         <!-- Pure AMOLED Black native bars and window background -->
@@ -14,7 +14,7 @@
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
     </style>
 
-    <!-- Rivo Splash Theme -->
+    <!-- Rivo Splash Theme for API 31+ -->
     <style name="RivoSplashTheme" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">#000000</item>
         <item name="android:statusBarColor">#000000</item>
