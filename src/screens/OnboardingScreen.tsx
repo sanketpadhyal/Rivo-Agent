@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, {useState, useRef, useEffect} from 'react';
 import {
   View,
   Text,
@@ -9,140 +9,268 @@ import {
   PanResponder,
   ScrollView,
   BackHandler,
+  Platform,
+  UIManager,
+  LayoutAnimation,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DeviceInfo from 'react-native-device-info';
-import {
-  Smartphone,
-  HardDriveDownload,
-  Cpu,
-  HardDrive,
-  Info,
-  CloudDownload,
-  Brain,
-  Trash2,
-} from 'lucide-react-native';
+import { Smartphone, HardDriveDownload, Cpu, HardDrive, Info, CloudDownload, Brain, Trash2, AlertTriangle, Zap } from 'lucide-react-native';
 import {
   MODEL_CATALOG,
   formatModelSize,
   getModelDownloadUrl,
   getModelTaskId,
 } from '../data/modelCatalog';
-import type { ModelCatalogItem } from '../data/modelCatalog';
+import type {ModelCatalogItem} from '../data/modelCatalog';
 import ProfessionalAlert from '../components/ProfessionalAlert';
-import { getExistingDownloadTasks } from '@kesha-antonov/react-native-background-downloader';
-import {
-  isModelFileInstalled,
-  deleteModelFile,
-} from '../utils/modelInstallStatus';
+import {getExistingDownloadTasks} from '@kesha-antonov/react-native-background-downloader';
+import {isModelFileInstalled, deleteModelFile} from '../utils/modelInstallStatus';
+
 const BYTES_PER_GB = 1000 * 1000 * 1000;
 const MARKET_RAM_TIERS = [1, 2, 3, 4, 6, 8, 12, 16, 18, 24, 32];
 const DOWNLOAD_STORAGE_RESERVE_BYTES = 200 * 1000 * 1000;
 const RECOMMENDATION_STORAGE_RESERVE_BYTES = 1000 * 1000 * 1000;
+
 const getRecommendedMaxPriority = (ramGB: number) => {
   if (ramGB <= 1) return 10;
-  if (ramGB <= 8) return 20;
-  return 60;
+  if (ramGB <= 3) return 20;
+  if (ramGB <= 5) return 30; // Max 1.5B model for 4GB/5GB devices to guarantee zero lag & high speed
+  if (ramGB <= 7) return 60;
+  return 85;
 };
+
 const getRecommendedCatalogModel = (
   catalog: ModelCatalogItem[],
   ramGB: number,
   freeDisk: number,
 ) => {
   const recommendedMaxPriority = getRecommendedMaxPriority(ramGB);
-  const smoothCandidates = catalog.filter(
-    model =>
-      ramGB >= model.minRam &&
-      freeDisk >= model.byteSize + RECOMMENDATION_STORAGE_RESERVE_BYTES,
-  );
+  // Strictly filter for models that leave ample RAM headroom (at least 2.0GB for <=5GB devices) to guarantee hyper-fast inference speed
+  const smoothCandidates = catalog.filter(model => {
+    const requiredHeadroom = ramGB <= 5 ? 2.0 : 1.5;
+    const hasRamHeadroom = ramGB <= 1 || ramGB >= model.minRam + requiredHeadroom;
+    const hasDiskSpace = freeDisk >= model.byteSize + RECOMMENDATION_STORAGE_RESERVE_BYTES;
+    return hasRamHeadroom && hasDiskSpace;
+  });
+
   return (
     smoothCandidates
       .filter(model => model.priority <= recommendedMaxPriority)
       .sort((a, b) => b.priority - a.priority)[0] ??
     smoothCandidates.sort((a, b) => a.priority - b.priority)[0] ??
     catalog
-      .filter(
-        model =>
-          ramGB >= model.minRam &&
-          freeDisk >= model.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES,
-      )
+      .filter(model => ramGB >= model.minRam && freeDisk >= model.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES)
       .sort((a, b) => a.priority - b.priority)[0]
   );
 };
-const normalizeWhitespace = (value?: string | null) =>
-  value?.replace(/\s+/g, ' ').trim() ?? '';
+
+const normalizeWhitespace = (value?: string | null) => value?.replace(/\s+/g, ' ').trim() ?? '';
+
 const getDisplayDeviceName = async () => {
   const [deviceName, rawModel, isEmulator] = await Promise.all([
     DeviceInfo.getDeviceName().catch(() => ''),
     Promise.resolve(DeviceInfo.getModel()).catch(() => ''),
     DeviceInfo.isEmulator().catch(() => false),
   ]);
+
   if (isEmulator) {
     return 'Android Virtual Device';
   }
-  return (
-    normalizeWhitespace(deviceName) ||
-    normalizeWhitespace(rawModel) ||
-    'This device'
-  );
+
+  return normalizeWhitespace(deviceName) || normalizeWhitespace(rawModel) || 'This device';
 };
+
 const getMarketedRamGB = (bytes: number) => {
   const decimalRam = bytes / BYTES_PER_GB;
-  const nearestTier = MARKET_RAM_TIERS.reduce(
-    (nearest, tier) =>
-      Math.abs(tier - decimalRam) < Math.abs(nearest - decimalRam)
-        ? tier
-        : nearest,
-    MARKET_RAM_TIERS[0],
-  );
+  const nearestTier = MARKET_RAM_TIERS.reduce((nearest, tier) => (
+    Math.abs(tier - decimalRam) < Math.abs(nearest - decimalRam) ? tier : nearest
+  ), MARKET_RAM_TIERS[0]);
+
   if (Math.abs(nearestTier - decimalRam) / nearestTier <= 0.18) {
     return nearestTier;
   }
+
   return Math.max(1, Math.round(decimalRam));
 };
+
 const formatStorageGB = (bytes: number) => {
   const value = bytes / BYTES_PER_GB;
   return value >= 100 ? String(Math.round(value)) : value.toFixed(1);
 };
+
 interface Props {
   onComplete: () => void;
   onModelReady?: () => void;
 }
+
+const ModelCardRow = ({
+  model,
+  isSelected,
+  onPress,
+  onDeletePress,
+}: {
+  model: any;
+  isSelected: boolean;
+  onPress: () => void;
+  onDeletePress: (model: any) => void;
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const radioScale = useRef(new Animated.Value(isSelected ? 1 : 0)).current;
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(scaleAnim, {
+        toValue: isSelected ? 1.01 : 1,
+        friction: 8,
+        tension: 140,
+        useNativeDriver: true,
+      }),
+      Animated.spring(radioScale, {
+        toValue: isSelected ? 1 : 0,
+        friction: 6,
+        tension: 160,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [isSelected]);
+
+  return (
+    <AnimatedTouchableOpacity
+      key={model.id}
+      style={[
+        styles.modelCard,
+        !model.isSupported && styles.modelCardDisabled,
+        model.hasActiveDownload && styles.modelCardDownloading,
+        isSelected && styles.modelCardSelected,
+        isSelected && model.hasActiveDownload && styles.modelCardDownloadingSelected,
+        model.isDownloaded && styles.modelCardDownloaded,
+        isSelected && model.isDownloaded && styles.modelCardDownloadedSelected,
+        {transform: [{scale: scaleAnim}]},
+      ]}
+      activeOpacity={0.76}
+      onPress={onPress}
+    >
+      <View style={styles.modelHeader}>
+        <View style={styles.modelTitleRow}>
+          {model.logo && !imgError ? (
+            <Image
+              source={{uri: model.logo}}
+              style={styles.modelLogo}
+              resizeMode="cover"
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <Brain color={isSelected ? '#0A84FF' : '#FFFFFF'} size={20} strokeWidth={2.5} style={{marginRight: 8}} />
+          )}
+          <Text
+            style={[styles.modelName, isSelected && styles.modelNameSelected]}
+            numberOfLines={1}>
+            {model.name}
+          </Text>
+        </View>
+        {isSelected && model.isDownloaded ? (
+          <TouchableOpacity
+            style={styles.deleteModelBtn}
+            activeOpacity={0.76}
+            onPress={(e) => {
+              e.stopPropagation();
+              onDeletePress(model);
+            }}>
+            <Trash2 color="#FFFFFF" size={14} strokeWidth={2.5} />
+          </TouchableOpacity>
+        ) : model.tag ? (
+          <View
+            style={[
+              styles.tagContainer,
+              model.hasActiveDownload && styles.downloadingTagContainer,
+              model.isDownloaded && styles.downloadedTagContainer,
+            ]}>
+            <Text
+              style={[
+                styles.tagText,
+                model.hasActiveDownload && styles.downloadingTagText,
+                model.isDownloaded && styles.downloadedTagText,
+              ]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.72}>
+              {model.tag}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+      <Text style={styles.modelDesc}>{model.description}</Text>
+      {model.limitations ? (
+        <View style={styles.limitationContainer}>
+          <AlertTriangle color="#FF9F0A" size={12} strokeWidth={2.4} style={styles.limitationIcon} />
+          <Text style={styles.limitationText}>
+            <Text style={styles.limitationLabel}>Limitation: </Text>
+            {model.limitations}
+          </Text>
+        </View>
+      ) : null}
+      <View style={styles.modelFooter}>
+        <View style={styles.modelMetaRow}>
+          <View style={styles.modelSizeGroup}>
+            <HardDriveDownload color="#34C759" size={16} strokeWidth={2.5} style={{marginRight: 6}} />
+            <Text style={styles.modelSize} numberOfLines={1}>{model.size}</Text>
+          </View>
+          <Text style={styles.modelDownloads}>
+            {model.minRam > 0 ? `${model.minRam}GB+ RAM` : 'All RAM'}
+          </Text>
+          {!model.ramFits && (
+            <Text style={styles.modelDownloads}>Unsupported</Text>
+          )}
+          {model.ramFits && !model.storageFits && !model.isDownloaded && (
+            <Text style={styles.modelDownloads}>Need storage</Text>
+          )}
+          {model.hasActiveDownload && (
+            <Text style={styles.downloadingMeta}>
+              {model.activePercent > 0 ? `${model.activePercent}%` : 'Active'}
+            </Text>
+          )}
+          {model.downloads > 0 && (
+            <Text style={styles.modelDownloads}>↓ {(model.downloads / 1000).toFixed(1)}k</Text>
+          )}
+        </View>
+        <View style={[styles.radio, isSelected && styles.radioSelected]}>
+          <Animated.View style={[styles.radioInner, {transform: [{scale: radioScale}]}]} />
+        </View>
+      </View>
+    </AnimatedTouchableOpacity>
+  );
+};
+
 const ModelSkeleton = () => {
   const pulseAnim = useRef(new Animated.Value(0.3)).current;
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 0.7,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 0.3,
-          duration: 800,
-          useNativeDriver: true,
-        }),
-      ]),
+        Animated.timing(pulseAnim, {toValue: 0.7, duration: 800, useNativeDriver: true}),
+        Animated.timing(pulseAnim, {toValue: 0.3, duration: 800, useNativeDriver: true})
+      ])
     ).start();
   }, [pulseAnim]);
+
   return (
-    <Animated.View
-      style={[
-        styles.modelCard,
-        {
-          opacity: pulseAnim,
-        },
-      ]}
-    >
-      <View style={styles.skeletonTitle} />
-      <View style={styles.skeletonDesc} />
-      <View style={styles.skeletonFooter} />
+    <Animated.View style={[styles.modelCard, {opacity: pulseAnim}]}>
+       <View style={styles.skeletonTitle} />
+       <View style={styles.skeletonDesc} />
+       <View style={styles.skeletonFooter} />
     </Animated.View>
   );
 };
-const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
+
+const OnboardingScreen: React.FC<Props> = ({onComplete, onModelReady}) => {
   const insets = useSafeAreaInsets();
   const [models, setModels] = useState<any[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -160,19 +288,18 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
     message: '',
     iconName: 'alert-circle' as 'alert-circle' | 'hard-drive' | 'cpu',
   });
-  const [deleteConfirmModel, setDeleteConfirmModel] = useState<any | null>(
-    null,
-  );
+  const [deleteConfirmModel, setDeleteConfirmModel] = useState<any | null>(null);
   const selectedModelData = models.find(model => model.id === selectedModel);
   const canDownloadSelected = Boolean(selectedModelData?.isSupported);
-  const selectedModelIsDownloading = Boolean(
-    selectedModelData?.hasActiveDownload,
-  );
+  const selectedModelIsDownloading = Boolean(selectedModelData?.hasActiveDownload);
   const selectedModelIsDownloaded = Boolean(selectedModelData?.isDownloaded);
   const [swipeWidth, setSwipeWidth] = useState(0);
   const swipeX = useRef(new Animated.Value(0)).current;
   const swipeConfirmedRef = useRef(false);
   const maxSwipeX = Math.max(swipeWidth - 58, 0);
+
+
+
   const loadData = React.useCallback(async () => {
     try {
       const [totalMemory, freeDisk, deviceModel] = await Promise.all([
@@ -189,45 +316,38 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
         freeStorageGB,
         freeStorageLabel: `${formatStorageGB(freeDisk)}GB Free`,
       });
-      const compatibleCatalog = [...MODEL_CATALOG].sort(
-        (a, b) => a.priority - b.priority,
-      );
+
+      const compatibleCatalog = [...MODEL_CATALOG].sort((a, b) => a.priority - b.priority);
+
       const existingTasks = await getExistingDownloadTasks();
       const activeDownloadStates = ['PENDING', 'DOWNLOADING', 'PAUSED'];
-      const recommendedCatalogModel = getRecommendedCatalogModel(
-        compatibleCatalog,
-        ramGB,
-        freeDisk,
-      );
+      const recommendedCatalogModel = getRecommendedCatalogModel(compatibleCatalog, ramGB, freeDisk);
+
+      // Fetch realtime data from HuggingFace for the real downloadable GGUF files.
       const fetchedModels: any[] = [];
       for (const repo of compatibleCatalog) {
         const activeTask = existingTasks.find(
-          task =>
-            task.id === getModelTaskId(repo) &&
-            activeDownloadStates.includes(task.state),
+          task => task.id === getModelTaskId(repo) && activeDownloadStates.includes(task.state),
         );
         const hasActiveDownload = Boolean(activeTask);
         const ramFits = ramGB >= repo.minRam;
-        const storageFits =
-          freeDisk >= repo.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES;
+        const storageFits = freeDisk >= repo.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES;
         const isDownloaded = await isModelFileInstalled(repo, repo.fileName);
-        const isSupported =
-          isDownloaded || hasActiveDownload || (ramFits && storageFits);
+        const isSupported = isDownloaded || hasActiveDownload || (ramFits && storageFits);
         const activeBytesTotal = activeTask?.bytesTotal || repo.byteSize;
         const activePercent =
           activeTask && activeBytesTotal > 0
             ? Math.floor((activeTask.bytesDownloaded / activeBytesTotal) * 100)
             : 0;
         try {
-          const res = await fetch(
-            `https://huggingface.co/api/models/${repo.id}`,
-          );
+          const res = await fetch(`https://huggingface.co/api/models/${repo.id}`);
           const data = await res.json();
           fetchedModels.push({
             id: repo.id,
             name: repo.name,
             logo: repo.logo,
             description: repo.desc,
+            limitations: repo.limitations,
             size: formatModelSize(repo.byteSize),
             fileName: repo.fileName,
             byteSize: repo.byteSize,
@@ -244,17 +364,19 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
             tag: isDownloaded
               ? 'DOWNLOADED'
               : hasActiveDownload
-              ? 'CONTINUE DOWNLOADING'
-              : repo.id === recommendedCatalogModel?.id
-              ? 'RECOMMENDED'
-              : null,
+                ? 'CONTINUE DOWNLOADING'
+                : repo.id === recommendedCatalogModel?.id
+                  ? 'RECOMMENDED'
+                  : null,
           });
         } catch {
+          // fallback if network fails
           fetchedModels.push({
             id: repo.id,
             name: repo.name,
             logo: repo.logo,
             description: repo.desc,
+            limitations: repo.limitations,
             size: formatModelSize(repo.byteSize),
             fileName: repo.fileName,
             byteSize: repo.byteSize,
@@ -271,22 +393,20 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
             tag: isDownloaded
               ? 'DOWNLOADED'
               : hasActiveDownload
-              ? 'CONTINUE DOWNLOADING'
-              : repo.id === recommendedCatalogModel?.id
-              ? 'RECOMMENDED'
-              : null,
+                ? 'CONTINUE DOWNLOADING'
+                : repo.id === recommendedCatalogModel?.id
+                  ? 'RECOMMENDED'
+                  : null,
           });
         }
       }
+      
       setModels(fetchedModels);
-      const firstActiveDownload = fetchedModels.find(
-        model => model.hasActiveDownload,
-      );
+      const firstActiveDownload = fetchedModels.find(model => model.hasActiveDownload);
       const firstDownloaded = fetchedModels.find(model => model.isDownloaded);
-      const recommendedModel = fetchedModels.find(
-        model => model.id === recommendedCatalogModel?.id,
-      );
+      const recommendedModel = fetchedModels.find(model => model.id === recommendedCatalogModel?.id);
       const firstDownloadable = fetchedModels.find(model => model.isSupported);
+      
       setSelectedModel(current => {
         if (current && fetchedModels.some(m => m.id === current)) {
           return current;
@@ -301,6 +421,7 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       console.error(e);
     }
   }, []);
+
   useEffect(() => {
     swipeConfirmedRef.current = false;
     Animated.spring(swipeX, {
@@ -311,12 +432,16 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       useNativeDriver: true,
     }).start();
   }, [canDownloadSelected, loading, selectedModel, swipeX]);
+
   useEffect(() => {
+    // Fetch Device Info & HuggingFace Models
     setLoading(true);
     loadData().finally(() => {
+      // Artificial delay to show off the premium skeleton loader
       setTimeout(() => setLoading(false), 1200);
     });
   }, [loadData]);
+
   useEffect(() => {
     const handleBack = () => {
       if (alert.visible) {
@@ -329,30 +454,25 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       }
       return false;
     };
-    const subscription = BackHandler.addEventListener(
-      'hardwareBackPress',
-      handleBack,
-    );
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', handleBack);
     return () => subscription.remove();
   }, [alert.visible, deleteConfirmModel]);
+
   const handleDownloadAndContinue = async () => {
     if (!canDownloadSelected) {
       return;
     }
+
     try {
       const model = models.find(m => m.id === selectedModel);
       if (model) {
         await AsyncStorage.setItem('selectedModelId', model.id);
         await AsyncStorage.setItem('selectedModelName', model.name);
         await AsyncStorage.setItem('selectedModelFileName', model.fileName);
-        await AsyncStorage.setItem(
-          'selectedModelSizeBytes',
-          String(model.byteSize),
-        );
-        await AsyncStorage.setItem(
-          'selectedModelDownloadUrl',
-          model.downloadUrl,
-        );
+        await AsyncStorage.setItem('selectedModelSizeBytes', String(model.byteSize));
+        await AsyncStorage.setItem('selectedModelDownloadUrl', model.downloadUrl);
+
         if (model.isDownloaded && onModelReady) {
           onModelReady();
           return;
@@ -364,28 +484,29 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       onComplete();
     }
   };
+
   const closeAlert = () => {
-    setAlert(current => ({
-      ...current,
-      visible: false,
-    }));
+    setAlert(current => ({...current, visible: false}));
   };
+
   const handleModelPress = (model: any) => {
     if (model.hasActiveDownload) {
       setSelectedModel(model.id);
       return;
     }
+
     if (!model.ramFits) {
       setAlert({
         visible: true,
         title: 'Model Not Supported',
-        message: `${model.name} needs at least ${model.minRam}GB RAM. This device reports ${deviceSpecs.ramLabel}, so it may crash or run too slowly. Choose a smaller optimized model for this device.`,
+	                message: `${model.name} needs at least ${model.minRam}GB RAM. This device reports ${deviceSpecs.ramLabel}, so it may crash or run too slowly. Choose a smaller optimized model for this device.`,
         iconName: 'cpu',
       });
       return;
     }
+
     if (!model.storageFits) {
-      const freeGB = `${deviceSpecs.freeStorageLabel}`;
+	      const freeGB = `${deviceSpecs.freeStorageLabel}`;
       setAlert({
         visible: true,
         title: 'Storage Not Enough',
@@ -394,8 +515,11 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       });
       return;
     }
+
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSelectedModel(model.id);
   };
+
   const resetSwipe = () => {
     swipeConfirmedRef.current = false;
     Animated.spring(swipeX, {
@@ -406,10 +530,12 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       useNativeDriver: true,
     }).start();
   };
+
   const completeSwipe = () => {
     if (swipeConfirmedRef.current) {
       return;
     }
+
     swipeConfirmedRef.current = true;
     Animated.timing(swipeX, {
       toValue: maxSwipeX,
@@ -420,37 +546,45 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
       resetSwipe();
     });
   };
+
+  const clampedSwipeX = swipeX.interpolate({
+    inputRange: [0, Math.max(1, maxSwipeX)],
+    outputRange: [0, Math.max(1, maxSwipeX)],
+    extrapolate: 'clamp',
+  });
+
+  const swipeTextOpacity = clampedSwipeX.interpolate({
+    inputRange: [0, Math.max(1, maxSwipeX) * 0.5],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
   const swipeResponder = PanResponder.create({
-    onStartShouldSetPanResponder: () =>
-      canDownloadSelected && !loading && maxSwipeX > 0,
+    onStartShouldSetPanResponder: () => canDownloadSelected && !loading && maxSwipeX > 0,
     onMoveShouldSetPanResponder: (_, gesture) =>
-      canDownloadSelected &&
-      !loading &&
-      maxSwipeX > 0 &&
-      Math.abs(gesture.dx) > 4,
+      canDownloadSelected && !loading && maxSwipeX > 0 && Math.abs(gesture.dx) > 2,
+    onPanResponderGrant: () => {
+      swipeX.stopAnimation();
+    },
     onPanResponderMove: (_, gesture) => {
       const nextValue = Math.max(0, Math.min(gesture.dx, maxSwipeX));
       swipeX.setValue(nextValue);
     },
     onPanResponderRelease: (_, gesture) => {
-      if (gesture.dx >= maxSwipeX * 0.7) {
+      const currentX = (swipeX as any)._value || gesture.dx;
+      if (currentX >= maxSwipeX * 0.5 || gesture.vx > 0.35) {
         completeSwipe();
         return;
       }
+
       resetSwipe();
     },
     onPanResponderTerminate: resetSwipe,
   });
+
   return (
     <View style={styles.container}>
-      <View
-        style={[
-          styles.header,
-          {
-            marginTop: insets.top + 14,
-          },
-        ]}
-      >
+      <View style={[styles.header, {marginTop: insets.top + 14}]}>
         <Image
           source={require('../assets/logo.png')}
           style={styles.logo}
@@ -463,8 +597,7 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
         <View style={styles.content}>
           <Text style={styles.title}>Select AI Model</Text>
           <Text style={styles.subtitle}>
-            Choose the neural network model that will run locally on your
-            device.
+            Choose the neural network model that will run locally on your device.
           </Text>
           <Text style={styles.huggingFaceCredit}>
             Models sourced from Hugging Face 🤗
@@ -474,51 +607,30 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
           </Text>
 
           <View style={styles.deviceInfoContainer}>
-            <View style={styles.deviceInfoIcon}>
-              <Smartphone color="#0A84FF" size={20} strokeWidth={2.5} />
+            <View style={styles.deviceInfoTopRow}>
+              <View style={styles.deviceInfoIcon}>
+                <Smartphone color="#0A84FF" size={20} strokeWidth={2.5} />
+              </View>
+              <View style={styles.deviceInfoTextContainer}>
+                <Text style={styles.deviceInfoTitle}>Optimal Hardware</Text>
+                <Text style={styles.deviceInfoText}>{deviceSpecs.modelName}</Text>
+              </View>
             </View>
-            <View style={styles.deviceInfoTextContainer}>
-              <Text style={styles.deviceInfoTitle}>Optimal Hardware</Text>
-              <Text style={styles.deviceInfoText}>{deviceSpecs.modelName}</Text>
 
-              <View style={styles.specsRow}>
-                <View style={styles.specBadge}>
-                  <Cpu
-                    color="#34C759"
-                    size={12}
-                    strokeWidth={2.5}
-                    style={styles.specBadgeIconSpacing}
-                  />
-                  <Text style={styles.specBadgeText}>
-                    {deviceSpecs.ramLabel}
-                  </Text>
-                </View>
-                <View style={styles.specBadge}>
-                  <HardDrive
-                    color="#34C759"
-                    size={12}
-                    strokeWidth={2.5}
-                    style={styles.specBadgeIconSpacing}
-                  />
-                  <Text style={styles.specBadgeText}>
-                    {deviceSpecs.freeStorageLabel}
-                  </Text>
-                </View>
+            <View style={styles.specsRow}>
+              <View style={[styles.specBadge, styles.ramBadge]}>
+                <Cpu color="#34C759" size={13} strokeWidth={2.5} style={styles.specBadgeIconSpacing} />
+                <Text style={[styles.specBadgeText, styles.ramBadgeText]}>{deviceSpecs.ramLabel}</Text>
               </View>
+              <View style={[styles.specBadge, styles.storageBadge]}>
+                <HardDrive color="#0A84FF" size={13} strokeWidth={2.5} style={styles.specBadgeIconSpacing} />
+                <Text style={[styles.specBadgeText, styles.storageBadgeText]}>{deviceSpecs.freeStorageLabel}</Text>
+              </View>
+            </View>
 
-              <View style={styles.adviceContainer}>
-                <Info
-                  color="#8E8E93"
-                  size={10}
-                  strokeWidth={2.5}
-                  style={{
-                    marginRight: 4,
-                  }}
-                />
-                <Text style={styles.adviceText}>
-                  Advice: Keep 10 GB storage empty for fast processing.
-                </Text>
-              </View>
+            <View style={styles.adviceContainer}>
+              <Zap color="#FF9F0A" size={12} strokeWidth={2.4} style={{marginRight: 6}} />
+              <Text style={styles.adviceText}>Advice: Keep 10 GB storage empty for fast processing.</Text>
             </View>
           </View>
 
@@ -526,8 +638,7 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Available Models</Text>
               <Text style={styles.sectionSubtitle}>
-                Shown models are optimized for your device and fetched by device
-                specs.
+                Shown models are optimized for your device and fetched by device specs.
               </Text>
             </View>
             {loading ? (
@@ -537,135 +648,16 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
                 <ModelSkeleton />
               </>
             ) : (
-              models.map(model => {
+              models.map((model) => {
                 const isSelected = selectedModel === model.id;
                 return (
-                  <TouchableOpacity
+                  <ModelCardRow
                     key={model.id}
-                    style={[
-                      styles.modelCard,
-                      !model.isSupported && styles.modelCardDisabled,
-                      model.hasActiveDownload && styles.modelCardDownloading,
-                      isSelected && styles.modelCardSelected,
-                      isSelected &&
-                        model.hasActiveDownload &&
-                        styles.modelCardDownloadingSelected,
-                      model.isDownloaded && styles.modelCardDownloaded,
-                      isSelected &&
-                        model.isDownloaded &&
-                        styles.modelCardDownloadedSelected,
-                    ]}
-                    activeOpacity={0.7}
+                    model={model}
+                    isSelected={isSelected}
                     onPress={() => handleModelPress(model)}
-                  >
-                    <View style={styles.modelHeader}>
-                      <View style={styles.modelTitleRow}>
-                        <Brain
-                          color="#FFFFFF"
-                          size={20}
-                          strokeWidth={2.5}
-                          style={{
-                            marginRight: 8,
-                          }}
-                        />
-                        <Text
-                          style={[
-                            styles.modelName,
-                            isSelected && styles.modelNameSelected,
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {model.name}
-                        </Text>
-                      </View>
-                      {isSelected && model.isDownloaded ? (
-                        <TouchableOpacity
-                          style={styles.deleteModelBtn}
-                          activeOpacity={0.76}
-                          onPress={e => {
-                            e.stopPropagation();
-                            setDeleteConfirmModel(model);
-                          }}
-                        >
-                          <Trash2 color="#FFFFFF" size={14} strokeWidth={2.5} />
-                        </TouchableOpacity>
-                      ) : model.tag ? (
-                        <View
-                          style={[
-                            styles.tagContainer,
-                            model.hasActiveDownload &&
-                              styles.downloadingTagContainer,
-                            model.isDownloaded && styles.downloadedTagContainer,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.tagText,
-                              model.hasActiveDownload &&
-                                styles.downloadingTagText,
-                              model.isDownloaded && styles.downloadedTagText,
-                            ]}
-                            numberOfLines={1}
-                            adjustsFontSizeToFit
-                            minimumFontScale={0.72}
-                          >
-                            {model.tag}
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <Text style={styles.modelDesc}>{model.description}</Text>
-                    <View style={styles.modelFooter}>
-                      <View style={styles.modelSizeGroup}>
-                        <HardDriveDownload
-                          color="#34C759"
-                          size={16}
-                          strokeWidth={2.5}
-                          style={{
-                            marginRight: 6,
-                          }}
-                        />
-                        <Text style={styles.modelSize} numberOfLines={1}>
-                          {model.size}
-                        </Text>
-                      </View>
-                      <Text style={styles.modelDownloads}>
-                        {model.minRam > 0
-                          ? `${model.minRam}GB+ RAM`
-                          : 'All RAM'}
-                      </Text>
-                      {!model.ramFits && (
-                        <Text style={styles.modelDownloads}>Unsupported</Text>
-                      )}
-                      {model.ramFits &&
-                        !model.storageFits &&
-                        !model.isDownloaded && (
-                          <Text style={styles.modelDownloads}>
-                            Need storage
-                          </Text>
-                        )}
-                      {model.hasActiveDownload && (
-                        <Text style={styles.downloadingMeta}>
-                          {model.activePercent > 0
-                            ? `${model.activePercent}%`
-                            : 'Active'}
-                        </Text>
-                      )}
-                      {model.downloads > 0 && (
-                        <Text style={styles.modelDownloads}>
-                          ↓ {(model.downloads / 1000).toFixed(1)}k
-                        </Text>
-                      )}
-                      <View
-                        style={[
-                          styles.radio,
-                          isSelected && styles.radioSelected,
-                        ]}
-                      >
-                        {isSelected && <View style={styles.radioInner} />}
-                      </View>
-                    </View>
-                  </TouchableOpacity>
+                    onDeletePress={(m) => setDeleteConfirmModel(m)}
+                  />
                 );
               })
             )}
@@ -673,14 +665,7 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
         </View>
       </ScrollView>
 
-      <View
-        style={[
-          styles.footer,
-          {
-            paddingBottom: Math.max(insets.bottom + 16, 32),
-          },
-        ]}
-      >
+      <View style={[styles.footer, {paddingBottom: Math.max(insets.bottom + 16, 32)}]}>
         <View
           style={[
             styles.swipeTrack,
@@ -688,20 +673,9 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
             (loading || !canDownloadSelected) && styles.swipeTrackDisabled,
           ]}
           onLayout={event => setSwipeWidth(event.nativeEvent.layout.width)}
-          {...swipeResponder.panHandlers}
-        >
+          {...swipeResponder.panHandlers}>
           <Animated.View
-            style={[
-              styles.swipeThumb,
-              {
-                transform: [
-                  {
-                    translateX: swipeX,
-                  },
-                ],
-              },
-            ]}
-          >
+            style={[styles.swipeThumb, {transform: [{translateX: clampedSwipeX}]}]}>
             <CloudDownload
               color={canDownloadSelected && !loading ? '#FFFFFF' : '#8E8E93'}
               size={22}
@@ -709,25 +683,25 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
             />
           </Animated.View>
           <View pointerEvents="none" style={styles.swipeTextLayer}>
-            <Text
+            <Animated.Text
               style={[
                 styles.swipeText,
+                {opacity: swipeTextOpacity},
                 (loading || !canDownloadSelected) && styles.swipeTextDisabled,
               ]}
               numberOfLines={1}
               adjustsFontSizeToFit
-              minimumFontScale={0.82}
-            >
+              minimumFontScale={0.82}>
               {loading
                 ? 'Fetching...'
                 : selectedModelIsDownloading
-                ? 'Swipe to Continue Downloading'
-                : selectedModelIsDownloaded
-                ? 'Swipe to Launch Engine'
-                : canDownloadSelected
-                ? 'Swipe to Download'
-                : 'Free Storage Needed'}
-            </Text>
+                  ? 'Swipe to Continue Downloading'
+                  : selectedModelIsDownloaded
+                    ? 'Swipe to Launch Engine'
+                    : canDownloadSelected
+                      ? 'Swipe to Download'
+                      : 'Free Storage Needed'}
+            </Animated.Text>
           </View>
         </View>
       </View>
@@ -755,10 +729,11 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
             setDeleteConfirmModel(null);
             setLoading(true);
             try {
+              // Delete the model file from storage
               await deleteModelFile(modelToDelete.fileName);
-              const currentSelected = await AsyncStorage.getItem(
-                'selectedModelId',
-              );
+              
+              // Clear stored keys if this was the selected model
+              const currentSelected = await AsyncStorage.getItem('selectedModelId');
               if (currentSelected === modelToDelete.id) {
                 await AsyncStorage.multiRemove([
                   'selectedModelId',
@@ -773,6 +748,8 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
                   'modelDownloadComplete',
                 ]);
               }
+              
+              // Reload models list
               await loadData();
             } catch (err) {
               console.warn('OnboardingScreen: failed to delete model:', err);
@@ -785,6 +762,7 @@ const OnboardingScreen: React.FC<Props> = ({ onComplete, onModelReady }) => {
     </View>
   );
 };
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -841,82 +819,100 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   deviceInfoContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    position: 'relative',
     backgroundColor: '#15161A',
-    padding: 14,
-    borderRadius: 14,
+    padding: 16,
+    borderRadius: 18,
     marginBottom: 22,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
-    shadowColor: '#FFFFFF',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 24,
-    elevation: 12,
+    borderColor: '#26262E',
+    shadowColor: '#000000',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  deviceInfoTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   deviceInfoIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#2A2A2E',
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: '#162235',
+    borderWidth: 1,
+    borderColor: 'rgba(10, 132, 255, 0.25)',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
   deviceInfoTextContainer: {
     flex: 1,
-    justifyContent: 'center',
   },
   deviceInfoTitle: {
-    color: '#8E8E93',
-    fontSize: 11,
+    color: '#FFFFFF',
+    fontSize: 10,
     fontFamily: 'SF-Pro-Rounded-Bold',
     textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 4,
+    letterSpacing: 1.2,
+    marginBottom: 2,
   },
   deviceInfoText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'SF-Pro-Rounded-Heavy',
-    marginBottom: 8,
+    fontSize: 16,
+    fontFamily: 'SF-Pro-Rounded-Bold',
   },
   specsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginTop: 4,
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
   },
   specBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2A2A2E',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    marginRight: 6,
-    marginBottom: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  ramBadge: {
+    backgroundColor: '#15241B',
+    borderColor: 'rgba(52, 199, 89, 0.3)',
+  },
+  ramBadgeText: {
+    color: '#34C759',
+  },
+  storageBadge: {
+    backgroundColor: '#162235',
+    borderColor: 'rgba(10, 132, 255, 0.3)',
+  },
+  storageBadgeText: {
+    color: '#0A84FF',
   },
   specBadgeIconSpacing: {
-    marginRight: 4,
+    marginRight: 5,
   },
   specBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Bold',
+    letterSpacing: 0.2,
   },
   adviceContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 10,
+    backgroundColor: 'rgba(255, 159, 10, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 159, 10, 0.25)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
   },
   adviceText: {
-    color: '#8E8E93',
-    fontSize: 10,
+    flex: 1,
+    color: '#D4D4D8',
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Semibold',
   },
   sectionHeader: {
@@ -938,16 +934,16 @@ const styles = StyleSheet.create({
   },
   modelCard: {
     backgroundColor: '#1C1C1E',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 12,
     borderWidth: 2,
     borderColor: 'transparent',
-    overflow: 'hidden',
   },
   modelCardSelected: {
     borderColor: '#0A84FF',
-    backgroundColor: '#162235',
+    backgroundColor: '#132035',
   },
   modelCardDownloading: {
     borderColor: 'rgba(255, 214, 10, 0.4)',
@@ -974,10 +970,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modelLogo: {
-    width: 20,
-    height: 20,
-    borderRadius: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     marginRight: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
   modelName: {
     flex: 1,
@@ -1020,9 +1017,17 @@ const styles = StyleSheet.create({
   },
   modelFooter: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
-    rowGap: 8,
+    justifyContent: 'space-between',
+    marginTop: 10,
+  },
+  modelMetaRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    rowGap: 6,
+    paddingRight: 8,
   },
   modelSizeGroup: {
     flexDirection: 'row',
@@ -1035,14 +1040,14 @@ const styles = StyleSheet.create({
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
   radio: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
     borderColor: '#3A3A3C',
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 'auto',
+    flexShrink: 0,
   },
   radioSelected: {
     borderColor: '#0A84FF',
@@ -1079,9 +1084,9 @@ const styles = StyleSheet.create({
   swipeTextLayer: {
     position: 'absolute',
     top: 0,
-    right: 20,
+    right: 0,
     bottom: 0,
-    left: 70,
+    left: 0,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1109,10 +1114,7 @@ const styles = StyleSheet.create({
     zIndex: 10,
     elevation: 10,
     shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
+    shadowOffset: {width: 0, height: 8},
     shadowOpacity: 0.18,
     shadowRadius: 12,
   },
@@ -1171,13 +1173,39 @@ const styles = StyleSheet.create({
     borderColor: '#34C759',
     backgroundColor: '#122515',
     shadowColor: '#34C759',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
+    shadowOffset: {width: 0, height: 0},
     shadowOpacity: 0.22,
     shadowRadius: 12,
     elevation: 4,
   },
+  limitationContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: 'rgba(255, 159, 10, 0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 159, 10, 0.2)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginTop: 6,
+    marginBottom: 4,
+    gap: 7,
+  },
+  limitationIcon: {
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  limitationText: {
+    flex: 1,
+    color: '#D4D4D8',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    lineHeight: 16,
+  },
+  limitationLabel: {
+    color: '#FF9F0A',
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
 });
+
 export default OnboardingScreen;

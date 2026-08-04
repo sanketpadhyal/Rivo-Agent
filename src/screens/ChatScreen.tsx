@@ -31,12 +31,12 @@ import {
   View,
   NativeModules,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
   ArrowUpRight,
   Check,
-  ChevronDown,
   Copy,
+  Globe,
   MoreHorizontal,
   SendHorizontal,
   Share2,
@@ -49,22 +49,32 @@ import {
   Cpu,
   HardDrive,
   Lock,
+  Sparkles,
+  Laptop,
 } from 'lucide-react-native';
+import Svg, {Path} from 'react-native-svg';
+
+const GithubIcon: React.FC<{color?: string; size?: number}> = ({color = '#0A84FF', size = 15}) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4" />
+    <Path d="M9 18c-4.51 2-5-2-7-2" />
+  </Svg>
+);
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import auth from '@react-native-firebase/auth';
 import DeviceInfo from 'react-native-device-info';
-import { initLlama, LlamaContext, RNLlamaOAICompatibleMessage } from 'llama.rn';
-import {
-  getModelFilePath,
-  getSelectedInstalledModel,
-  deleteModelFile,
-} from '../utils/modelInstallStatus';
-import { getExistingDownloadTasks } from '@kesha-antonov/react-native-background-downloader';
+import {initLlama, LlamaContext, RNLlamaOAICompatibleMessage} from 'llama.rn';
+import {getModelFilePath, getSelectedInstalledModel, deleteModelFile} from '../utils/modelInstallStatus';
+import {findCatalogModel} from '../data/modelCatalog';
+import {getExistingDownloadTasks} from '@kesha-antonov/react-native-background-downloader';
 import ProfessionalAlert from '../components/ProfessionalAlert';
+
 interface Props {
   onBack: () => void;
 }
+
 type ChatRole = 'user' | 'assistant' | 'notice';
+
 type ChatMessage = {
   id: string;
   role: ChatRole;
@@ -72,16 +82,11 @@ type ChatMessage = {
   interrupted?: boolean;
   isTruncated?: boolean;
 };
+
 type MessageSegment =
-  | {
-      type: 'text';
-      content: string;
-    }
-  | {
-      type: 'code';
-      content: string;
-      language: string;
-    };
+  | {type: 'text'; content: string}
+  | {type: 'code'; content: string; language: string};
+
 type StoredThread = {
   id: string;
   title: string;
@@ -90,23 +95,28 @@ type StoredThread = {
   summary?: string;
   compactedCount?: number;
   userMemory?: string;
+  isCodingLocked?: boolean;
 };
+
 type ResponsePhase = 'idle' | 'thinking' | 'composing';
+
 type CompletionTextResult = {
   content?: string;
   interrupted?: boolean;
   text?: string;
 };
+
 type CompletionTokenUpdate = {
   token?: unknown;
   content?: unknown;
   accumulated_text?: unknown;
 };
+
 const CHAT_THREADS_KEY = 'rivo.chat.threads.v1';
 const ACTIVE_THREAD_KEY = 'rivo.chat.activeThreadId.v1';
 const MAX_THREADS = 7;
-const STREAM_FLUSH_MS = 48;
-const SCROLL_THROTTLE_MS = 48;
+const STREAM_FLUSH_MS = 48; // Optimized from 16ms to prevent bridge congestion and keep UI buttery smooth
+const SCROLL_THROTTLE_MS = 48; // Matched to stream flush rate to reduce scroll rendering overhead
 const AUTO_SCROLL_RESUME_THRESHOLD = 90;
 const RESTORE_SCROLL_DELAYS = [0, 80, 180, 320];
 const ANDROID_KEYBOARD_RECHECK_DELAYS = [80, 180, 320];
@@ -123,6 +133,7 @@ const contextSource = require('../assets/context.png');
 const DEVELOPER_GITHUB_URL = 'https://github.com/sanketpadhyal';
 const PROJECT_REPO_URL = 'https://github.com/sanketpadhyal/Rivo-Agent';
 const SUPPORT_EMAIL = 'sanketpadhyal3@gmail.com';
+
 const STOP_WORDS = [
   '</s>',
   '<|end|>',
@@ -134,82 +145,99 @@ const STOP_WORDS = [
   '<|end_of_turn|>',
   '<|endoftext|>',
 ];
+
 const ASCII_SYMBOL_PATTERN = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g;
 const LONG_SYMBOL_RUN_PATTERN = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{8,}/;
-const escapeRegExp = (value: string) =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 const stripStopMarkers = (text: string) =>
-  STOP_WORDS.reduce(
-    (current, stopWord) =>
-      current.replace(new RegExp(escapeRegExp(stopWord), 'g'), ''),
-    text,
-  );
+  STOP_WORDS.reduce((current, stopWord) => (
+    current.replace(new RegExp(escapeRegExp(stopWord), 'g'), '')
+  ), text);
+
+const sanitizeMessageForLlama = (text: string) => {
+  if (!text) return '';
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+};
+
 const MENU_ITEMS = [
-  {
-    label: 'Fresh thread',
-    isActive: true,
-  },
+  {label: 'Fresh thread', isActive: true},
 ];
+
 const lightHaptic = () => {
-  if (Platform.OS === 'android') {
-    return;
-  }
   try {
-    Vibration.vibrate(8);
+    if (Platform.OS === 'android') {
+      Vibration.vibrate(10);
+    } else {
+      Vibration.vibrate(8);
+    }
   } catch (error) {
     console.warn('ChatScreen: haptic feedback failed:', error);
   }
 };
+
+const streamHaptic = () => {
+  try {
+    if (Platform.OS === 'android') {
+      Vibration.vibrate(4);
+    } else {
+      Vibration.vibrate(3);
+    }
+  } catch (error) {
+    // Ignore stream haptic failures
+  }
+};
+
 const setClipboardText = (text: string) => {
   const clipboard = NativeModules.RivoClipboard as
-    | {
-        setString?: (value: string) => Promise<boolean>;
-      }
+    | {setString?: (value: string) => Promise<boolean>}
     | undefined;
+
   clipboard?.setString?.(text).catch(error => {
     console.warn('ChatScreen: failed to copy text:', error);
   });
 };
-const createThreadId = () =>
-  `thread_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+const createThreadId = () => `thread_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
 const cleanFactValue = (value: string) =>
   value
     .trim()
     .replace(/[?.!,].*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
+
 const titleCaseWords = (value: string) =>
   value
     .split(/\s+/)
     .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(' ');
+
 const previewPrompt = (value: string) => {
   const clean = value.replace(/\s+/g, ' ').trim();
   return clean.length > 86 ? `${clean.slice(0, 83)}...` : clean;
 };
-const buildThinkingTrace = (
-  prompt: string,
-  hasMemory: boolean,
-  isFirstMessage = false,
-) => [
+
+const buildThinkingTrace = (prompt: string, hasMemory: boolean, isFirstMessage = false) => [
   `Understanding your question: "${previewPrompt(prompt)}"`,
   hasMemory
     ? 'Checking saved local memory and recent chat context.'
     : 'Checking recent chat context on this device.',
   'Identifying the main topic, intent, and useful details.',
   ...(isFirstMessage
-    ? [
-        'Waking up: Loading local model files into your device RAM/GPU (this first message may take longer to initialize, subsequent replies will be fast)...',
-      ]
+    ? ['Waking up: Loading local model files into your device RAM/GPU (this first message may take longer to initialize, subsequent replies will be fast)...']
     : []),
   'Choosing the clearest structure for the reply.',
   'Starting the local response stream.',
 ];
+
 const appendMemoryFact = (existing: string, fact: string) => {
   const cleanFact = fact.trim();
   if (!cleanFact) {
     return existing;
   }
+
   const facts = existing
     .split('\n')
     .map(item => item.trim())
@@ -221,8 +249,10 @@ const appendMemoryFact = (existing: string, fact: string) => {
     }
     return item.toLowerCase() !== factKey;
   });
+
   return [...filteredFacts, cleanFact].join('\n');
 };
+
 const extractUserMemory = (text: string, existing = '') => {
   let nextMemory = existing;
   const patterns = [
@@ -232,129 +262,116 @@ const extractUserMemory = (text: string, existing = '') => {
     /\bi'm\s+([A-Z][a-zA-Z\s]{1,40})/,
     /\bcall me\s+([a-zA-Z][a-zA-Z\s]{1,40})/i,
   ];
+
   for (const pattern of patterns) {
     const match = text.match(pattern);
     const name = cleanFactValue(match?.[1] ?? '');
-    if (
-      name &&
-      name.length <= 40 &&
-      !/^(veg|vegetarian|a|an|the|rivo|assistant)$/i.test(name)
-    ) {
-      nextMemory = appendMemoryFact(
-        nextMemory,
-        `User name: ${titleCaseWords(name)}.`,
-      );
+    if (name && name.length <= 40 && !/^(veg|vegetarian|a|an|the|rivo|assistant)$/i.test(name)) {
+      nextMemory = appendMemoryFact(nextMemory, `User name: ${titleCaseWords(name)}.`);
       break;
     }
   }
-  if (
-    /\b(i\s+am|i'm)\s+(veg|vegetarian)\b/i.test(text) ||
-    /\bi\s*(hate|dislike|don't like|do not like)\s+meats?\b/i.test(text)
-  ) {
-    nextMemory = appendMemoryFact(
-      nextMemory,
-      'User is vegetarian and dislikes meat.',
-    );
+
+  if (/\b(i\s+am|i'm)\s+(veg|vegetarian)\b/i.test(text) || /\bi\s*(hate|dislike|don't like|do not like)\s+meats?\b/i.test(text)) {
+    nextMemory = appendMemoryFact(nextMemory, 'User is vegetarian and dislikes meat.');
   }
-  const hateMatch = text.match(
-    /\bi\s*(hate|dislike|don't like|do not like)\s+([^.,!?]{2,46})/i,
-  );
+
+  const hateMatch = text.match(/\bi\s*(hate|dislike|don't like|do not like)\s+([^.,!?]{2,46})/i);
   const hateValue = cleanFactValue(hateMatch?.[2] ?? '');
   if (hateValue && !/^(you|it|this|that)$/i.test(hateValue)) {
     nextMemory = appendMemoryFact(nextMemory, `User dislikes ${hateValue}.`);
   }
+
   const likeMatch = text.match(/\bi\s*(like|love|prefer)\s+([^.,!?]{2,46})/i);
   const likeValue = cleanFactValue(likeMatch?.[2] ?? '');
   if (likeValue && !/^(you|it|this|that)$/i.test(likeValue)) {
     nextMemory = appendMemoryFact(nextMemory, `User likes ${likeValue}.`);
   }
+
   return nextMemory;
 };
+
 const BYTES_PER_GB = 1000 * 1000 * 1000;
 const MARKET_RAM_TIERS = [1, 2, 3, 4, 6, 8, 12, 16, 18, 24, 32];
-const normalizeWhitespace = (value?: string | null) =>
-  value?.replace(/\s+/g, ' ').trim() ?? '';
+
+const normalizeWhitespace = (value?: string | null) => value?.replace(/\s+/g, ' ').trim() ?? '';
+
 const getDisplayDeviceName = async () => {
   const [deviceName, rawModel, isEmulator] = await Promise.all([
     DeviceInfo.getDeviceName().catch(() => ''),
     Promise.resolve(DeviceInfo.getModel()).catch(() => ''),
     DeviceInfo.isEmulator().catch(() => false),
   ]);
+
   if (isEmulator) {
     return 'Android Virtual Device';
   }
-  return (
-    normalizeWhitespace(deviceName) ||
-    normalizeWhitespace(rawModel) ||
-    'This device'
-  );
+
+  return normalizeWhitespace(deviceName) || normalizeWhitespace(rawModel) || 'This device';
 };
+
 const getMarketedRamGB = (bytes: number) => {
   const decimalRam = bytes / BYTES_PER_GB;
-  const nearestTier = MARKET_RAM_TIERS.reduce(
-    (nearest, tier) =>
-      Math.abs(tier - decimalRam) < Math.abs(nearest - decimalRam)
-        ? tier
-        : nearest,
-    MARKET_RAM_TIERS[0],
-  );
+  const nearestTier = MARKET_RAM_TIERS.reduce((nearest, tier) => (
+    Math.abs(tier - decimalRam) < Math.abs(nearest - decimalRam) ? tier : nearest
+  ), MARKET_RAM_TIERS[0]);
+
   if (Math.abs(nearestTier - decimalRam) / nearestTier <= 0.18) {
     return nearestTier;
   }
+
   return Math.max(1, Math.round(decimalRam));
 };
+
 const extractNameFromMemory = (memory: string) => {
   const match = memory.match(/User name:\s*([^.\n]+)/i);
   return match?.[1]?.trim() || '';
 };
+
 const isGreetingPrompt = (text: string) =>
-  /^(hi|hello|hey|yo|hiya|sup|hola|namaste|good\s+(morning|afternoon|evening))(?:\s+(rivo|bro|buddy|there|sir))?[!.?\s]*$/i.test(
-    text.trim(),
-  );
+  /^(hi|hello|hey|yo|hiya|sup|hola|namaste|good\s+(morning|afternoon|evening))(?:\s+(rivo|bro|buddy|there|sir))?[!.?\s]*$/i.test(text.trim());
+
 const isIdentityFallback = (text: string, aiName: string) => {
-  const namePattern = new RegExp(
-    `\\b(i'?m|i am)\\s+${escapeRegExp(aiName)}\\b`,
-    'i',
-  );
+  const namePattern = new RegExp(`\\b(i'?m|i am)\\s+${escapeRegExp(aiName)}\\b`, 'i');
   return (
     namePattern.test(text) ||
     /\bprivate offline assistant\b/i.test(text) ||
     /\bhow can i (assist|help) you( today)?\b/i.test(text)
   );
 };
+
 const isCodeLikeResponse = (text: string) =>
-  /```|#include\s*[<"]|<\/?[a-z][\s\S]*?>|\bint\s+main\s*\(|\bfunction\s+\w+\s*\(|\b(const|let|var)\s+\w+\s*=|\bclass\s+\w+|\bdef\s+\w+\s*\(|=>|;\s*$/m.test(
-    text,
-  );
-const shouldRepairResponse = (
-  prompt: string,
-  response: string,
-  aiName: string,
-) =>
+  /```|#include|#define|import\s+\w+|from\s+\w+\s+import|\bint\s+|\bdouble\s+|\bfloat\s+|\bchar\s+|\bvoid\s+|\bstruct\s+|\bclass\s+|\bpublic\s+|\bprivate\s+|\bprintf\(|\bstd::|\bcout\b|\breturn\s+|\bfunction\s+|\bdef\s+|\bconst\s+|\blet\s+|\bvar\s+|\bval\s+|\bfn\s+|\bpackage\s+|\busing\s+|\bnamespace\s+|;\s*$/m.test(text);
+
+const shouldRepairResponse = (prompt: string, response: string, aiName: string) =>
+  !isCodeLikeResponse(response) &&
   !isGreetingPrompt(prompt) &&
-  !/who\s+are\s+you|what\s+are\s+you|your\s+name/i.test(prompt) &&
+  !/who\s+are\s+you|what\s+are\s+you|your\s+name|code|program|script|class|function|write/i.test(prompt) &&
   isIdentityFallback(response, aiName);
+
 const sanitizeGeneratedText = (text: string) => {
   const cleaned = stripStopMarkers(text)
     .replace(/^(thinking|composing|replying)\s*(\.{1,3})?\s*[:-]?\s*/i, '')
     .trim();
+
   if (/^(thinking|composing|replying)\s*(\.{1,3})?$/i.test(text.trim())) {
     return '';
   }
+
   return cleaned;
 };
-const coerceString = (value: unknown) =>
-  typeof value === 'string' ? value : '';
+
+const coerceString = (value: unknown) => (typeof value === 'string' ? value : '');
+
 const getStreamTextFromUpdate = (
   data: CompletionTokenUpdate,
   currentText: string,
 ) => {
-  const accumulatedText = sanitizeGeneratedText(
-    coerceString(data.accumulated_text),
-  );
+  const accumulatedText = sanitizeGeneratedText(coerceString(data.accumulated_text));
   if (accumulatedText && accumulatedText.length >= currentText.length) {
     return accumulatedText;
   }
+
   const parsedContent = sanitizeGeneratedText(coerceString(data.content));
   if (
     parsedContent &&
@@ -363,113 +380,106 @@ const getStreamTextFromUpdate = (
   ) {
     return parsedContent;
   }
+
   const token = coerceString(data.token);
   return token ? currentText + token : currentText;
 };
-const getCompletionText = (
-  result: CompletionTextResult,
-  streamedText: string,
-) => sanitizeGeneratedText(result.content || result.text || streamedText || '');
+
+const getCompletionText = (result: CompletionTextResult, streamedText: string) =>
+  sanitizeGeneratedText(result.content || result.text || streamedText || '');
+
 const isLikelyCorruptResponse = (text: string) => {
   if (isCodeLikeResponse(text)) {
     return false;
   }
-  const withoutCode = text.replace(/```[\s\S]*?```/g, ' ').trim();
-  if (withoutCode.length < 18 || withoutCode.includes('\uFFFD')) {
-    return withoutCode.includes('\uFFFD');
+  if (!text || isCodeLikeResponse(text)) {
+    return false;
   }
+  const withoutCode = text.replace(/```[\s\S]*?```/g, '').trim();
   const compact = withoutCode.replace(/\s+/g, '');
   if (compact.length < 18) {
     return false;
   }
+
   const symbols = compact.match(ASCII_SYMBOL_PATTERN)?.length ?? 0;
   const letters = compact.match(/[A-Za-z]/g)?.length ?? 0;
   const uppercase = compact.match(/[A-Z]/g)?.length ?? 0;
   const digits = compact.match(/\d/g)?.length ?? 0;
   const words = withoutCode.match(/[A-Za-z]{2,}/g) ?? [];
   const vowelWords = words.filter(word => /[aeiou]/i.test(word)).length;
-  const startsWithSymbolNoise =
-    /^[\s!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{2,}/.test(withoutCode);
+  const startsWithSymbolNoise = /^[\s!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{2,}/.test(withoutCode);
   const symbolRatio = symbols / compact.length;
   const uppercaseRatio = letters ? uppercase / letters : 0;
   const alnumRatio = (letters + digits) / compact.length;
+
   if (LONG_SYMBOL_RUN_PATTERN.test(compact)) {
     return true;
   }
+
   if (startsWithSymbolNoise && symbolRatio > 0.2 && withoutCode.length > 24) {
     return true;
   }
+
   if (symbolRatio > 0.34 && uppercaseRatio > 0.45 && withoutCode.length > 28) {
     return true;
   }
-  if (
-    symbolRatio > 0.28 &&
-    alnumRatio < 0.7 &&
-    words.length <= 3 &&
-    withoutCode.length > 24
-  ) {
+
+  if (symbolRatio > 0.28 && alnumRatio < 0.7 && words.length <= 3 && withoutCode.length > 24) {
     return true;
   }
-  if (
-    symbolRatio > 0.22 &&
-    words.length >= 3 &&
-    vowelWords / words.length < 0.45 &&
-    withoutCode.length > 40
-  ) {
+
+  if (symbolRatio > 0.22 && words.length >= 3 && vowelWords / words.length < 0.45 && withoutCode.length > 40) {
     return true;
   }
+
   return false;
 };
+
 const visibleGeneratedText = (text: string) => {
   const normalized = text.trim().toLowerCase();
-  const loaderWords = [
-    'thinking',
-    'thinking...',
-    'composing',
-    'composing...',
-    'replying',
-    'replying...',
-  ];
+  const loaderWords = ['thinking', 'thinking...', 'composing', 'composing...', 'replying', 'replying...'];
   if (normalized && loaderWords.some(word => word.startsWith(normalized))) {
     return '';
   }
+
   const visibleText = sanitizeGeneratedText(text).trimStart();
   return isLikelyCorruptResponse(visibleText) ? '' : visibleText;
 };
+
 const serializeMessages = (items: ChatMessage[], aiName: string) =>
   items
     .filter(item => item.role !== 'notice')
     .map(item => `${item.role === 'user' ? 'User' : aiName}: ${item.text}`)
     .join('\n');
+
 const makeTitle = (messages: ChatMessage[]) => {
-  const firstUser = messages.find(
-    message => message.role === 'user' && message.text.trim(),
-  );
+  const firstUser = messages.find(message => message.role === 'user' && message.text.trim());
   if (!firstUser) {
     return 'New local thread';
   }
+
   const clean = firstUser.text.replace(/\s+/g, ' ').trim();
   return clean.length > 34 ? `${clean.slice(0, 34)}...` : clean;
 };
+
 const normalizeCodeLanguage = (value: string) =>
   value
     .trim()
     .replace(/[^\w#+.-]/g, '')
     .toLowerCase();
+
 const detectCodeLanguage = (code: string, hintedLanguage = '') => {
   const hint = normalizeCodeLanguage(hintedLanguage);
   if (hint) {
     return hint;
   }
+
   const trimmed = code.trim();
   if (/^\s*</.test(trimmed)) {
     return 'html';
   }
-  if (
-    /\b(import|export|const|let|function|=>|interface|type)\b/.test(trimmed)
-  ) {
-    return /:\s*[A-Z_a-z][\w<>,\s[\]|]*/.test(trimmed) ||
-      /\binterface\b|\btype\b/.test(trimmed)
+  if (/\b(import|export|const|let|function|=>|interface|type)\b/.test(trimmed)) {
+    return /:\s*[A-Z_a-z][\w<>,\s[\]|]*/.test(trimmed) || /\binterface\b|\btype\b/.test(trimmed)
       ? 'typescript'
       : 'javascript';
   }
@@ -488,21 +498,24 @@ const detectCodeLanguage = (code: string, hintedLanguage = '') => {
   if (/^\s*(npm|yarn|pnpm|cd|git|curl)\b/m.test(trimmed)) {
     return 'bash';
   }
+
   return 'code';
 };
+
 const parseMessageSegments = (text: string): MessageSegment[] => {
+  if (!text) return [];
+  const cleanText = text.replace(/^Response \d+\n+/i, '');
   const segments: MessageSegment[] = [];
   const fencePattern = /```([^\n`]*)\n?([\s\S]*?)```/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = fencePattern.exec(text)) !== null) {
-    const before = text.slice(lastIndex, match.index);
-    if (before.trim()) {
-      segments.push({
-        type: 'text',
-        content: before.trim(),
-      });
+
+  while ((match = fencePattern.exec(cleanText)) !== null) {
+    const before = cleanText.slice(lastIndex, match.index);
+    if (before && before.trim().length > 0) {
+      segments.push({type: 'text', content: before});
     }
+
     const language = detectCodeLanguage(match[2], match[1]);
     segments.push({
       type: 'code',
@@ -511,39 +524,30 @@ const parseMessageSegments = (text: string): MessageSegment[] => {
     });
     lastIndex = fencePattern.lastIndex;
   }
-  const after = text.slice(lastIndex);
-  if (after.trim()) {
+
+  const after = cleanText.slice(lastIndex);
+  if (after) {
     const danglingFence = after.match(/```([^\n`]*)\n?([\s\S]*)$/);
     if (danglingFence && danglingFence.index !== undefined) {
       const before = after.slice(0, danglingFence.index);
-      if (before.trim()) {
-        segments.push({
-          type: 'text',
-          content: before.trim(),
-        });
+      if (before && before.trim().length > 0) {
+        segments.push({type: 'text', content: before});
       }
+
       const code = danglingFence[2].replace(/\n$/, '');
       segments.push({
         type: 'code',
         content: code,
         language: detectCodeLanguage(code, danglingFence[1]),
       });
-    } else {
-      segments.push({
-        type: 'text',
-        content: after.trim(),
-      });
+    } else if (after.trim().length > 0) {
+      segments.push({type: 'text', content: after});
     }
   }
-  return segments.length
-    ? segments
-    : [
-        {
-          type: 'text',
-          content: text,
-        },
-      ];
+
+  return segments.length ? segments : [{type: 'text', content: cleanText}];
 };
+
 const ThinkingText = ({
   isHiding,
   label,
@@ -556,6 +560,7 @@ const ThinkingText = ({
   const progress = useRef(new Animated.Value(isHiding ? 0 : 1)).current;
   const [dotCount, setDotCount] = useState(1);
   const labelBase = label.replace(/\.+$/, '');
+
   useEffect(() => {
     Animated.timing(progress, {
       toValue: isHiding ? 0 : 1,
@@ -564,12 +569,15 @@ const ThinkingText = ({
       useNativeDriver: false,
     }).start();
   }, [isHiding, progress]);
+
   useEffect(() => {
     const timer = setInterval(() => {
       setDotCount(current => (current % 3) + 1);
     }, 560);
+
     return () => clearInterval(timer);
   }, []);
+
   const animatedStyle = useMemo(
     () => ({
       maxHeight: progress.interpolate({
@@ -588,30 +596,24 @@ const ThinkingText = ({
     }),
     [progress],
   );
+
   return (
     <Animated.View style={[styles.thinkingTextWrap, animatedStyle]}>
       <View style={styles.thinkingTitleRow}>
         <Lightbulb color="#FFFFFF" size={19} strokeWidth={2.1} />
-        <Text style={styles.thinkingText}>{`${labelBase} ${'.'.repeat(
-          dotCount,
-        )}`}</Text>
+        <Text style={styles.thinkingText}>{`${labelBase} ${'.'.repeat(dotCount)}`}</Text>
       </View>
       <View style={styles.thinkingTrace}>
         {lines.map((line, index) => {
-          const isFirstMessageNotice = line
-            .toLowerCase()
-            .includes('first message');
+          const isFirstMessageNotice = line.toLowerCase().includes('first message');
           return (
             <Text
               key={`${line}_${index}`}
               style={[
                 styles.thinkingTraceLine,
                 index === lines.length - 1 && styles.thinkingTraceLineActive,
-                isFirstMessageNotice && {
-                  color: '#34C759',
-                },
-              ]}
-            >
+                isFirstMessageNotice && {color: '#34C759'},
+              ]}>
               {line}
             </Text>
           );
@@ -620,6 +622,7 @@ const ThinkingText = ({
     </Animated.View>
   );
 };
+
 const ChatSkeleton = () => (
   <View style={styles.skeletonHost}>
     <View style={styles.skeletonAssistantRow}>
@@ -642,8 +645,10 @@ const ChatSkeleton = () => (
     </View>
   </View>
 );
-const CopyStatusIcon = ({ copied }: { copied: boolean }) => {
+
+const CopyStatusIcon = ({copied}: {copied: boolean}) => {
   const progress = useRef(new Animated.Value(copied ? 1 : 0)).current;
+
   useEffect(() => {
     Animated.spring(progress, {
       toValue: copied ? 1 : 0,
@@ -653,6 +658,7 @@ const CopyStatusIcon = ({ copied }: { copied: boolean }) => {
       useNativeDriver: true,
     }).start();
   }, [copied, progress]);
+
   const copyOpacity = progress.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 0],
@@ -669,356 +675,325 @@ const CopyStatusIcon = ({ copied }: { copied: boolean }) => {
     inputRange: [0, 1],
     outputRange: [0.72, 1],
   });
+
   return (
     <View style={styles.copyIconStage}>
       <Animated.View
         style={[
           styles.copyIconLayer,
-          {
-            opacity: copyOpacity,
-            transform: [
-              {
-                scale: copyScale,
-              },
-            ],
-          },
-        ]}
-      >
+          {opacity: copyOpacity, transform: [{scale: copyScale}]},
+        ]}>
         <Copy color="#8E8E93" size={15} strokeWidth={2.3} />
       </Animated.View>
       <Animated.View
         style={[
           styles.copyIconLayer,
-          {
-            opacity: checkOpacity,
-            transform: [
-              {
-                scale: checkScale,
-              },
-            ],
-          },
-        ]}
-      >
+          {opacity: checkOpacity, transform: [{scale: checkScale}]},
+        ]}>
         <Check color="#B7FF2A" size={15} strokeWidth={2.5} />
       </Animated.View>
     </View>
   );
 };
-const FormattedText = memo(
-  ({ text, baseStyle }: { text: string; baseStyle: any }) => {
-    const parts = text.split(/(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*|`[\s\S]*?`)/g);
-    return (
-      <Text style={baseStyle}>
-        {parts.map((part, index) => {
-          if (!part) return null;
-          if (
-            part.startsWith('**') &&
-            part.endsWith('**') &&
-            part.length >= 4
-          ) {
-            return (
-              <Text
-                key={index}
-                style={{
-                  fontFamily: 'SF-Pro-Rounded-Bold',
-                  color: '#FFFFFF',
-                }}
-              >
-                {part.slice(2, -2)}
-              </Text>
-            );
-          }
-          if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
-            return (
-              <Text
-                key={index}
-                style={{
-                  fontStyle: 'italic',
-                }}
-              >
-                {part.slice(1, -1)}
-              </Text>
-            );
-          }
-          if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
-            return (
-              <Text
-                key={index}
-                style={{
-                  fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-                  backgroundColor: 'rgba(255,255,255,0.1)',
-                  color: '#34C759',
-                }}
-              >
-                {part.slice(1, -1)}
-              </Text>
-            );
-          }
-          return <Text key={index}>{part}</Text>;
-        })}
-      </Text>
-    );
-  },
-);
-const MessageBubble = memo(
-  ({
-    generationLabel,
-    isLive,
-    isThinkingHiding,
-    item,
-    thinkingLines,
-  }: {
-    generationLabel: string;
-    isLive: boolean;
-    isThinkingHiding: boolean;
-    item: ChatMessage;
-    thinkingLines: string[];
-  }) => {
-    const appear = useRef(new Animated.Value(0)).current;
-    const messageCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const codeCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-    const [copiedCodeIndex, setCopiedCodeIndex] = useState<number | null>(null);
-    const isUser = item.role === 'user';
-    const isNotice = item.role === 'notice';
-    const messageSegments = useMemo(
-      () => (!isUser && item.text ? parseMessageSegments(item.text) : []),
-      [isUser, item.text],
-    );
-    const shouldShowThinking =
-      isLive && thinkingLines.length > 0 && (!item.text || isThinkingHiding);
-    useEffect(() => {
-      Animated.timing(appear, {
-        toValue: 1,
-        duration: 260,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
-    }, [appear]);
-    useEffect(
-      () => () => {
-        if (messageCopyTimer.current) {
-          clearTimeout(messageCopyTimer.current);
+
+const renderInlineParts = (inlineText: string, baseStyle?: any) => {
+  if (!inlineText) return null;
+  const parts = inlineText.split(/(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*|`[\s\S]*?`)/g);
+
+  return parts.map((part, index) => {
+    if (!part) return null;
+    if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+      return (
+        <Text key={index} style={{fontFamily: 'SF-Pro-Rounded-Bold', color: '#FFFFFF'}}>
+          {part.slice(2, -2)}
+        </Text>
+      );
+    }
+    if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+      return (
+        <Text key={index} style={{fontStyle: 'italic'}}>
+          {part.slice(1, -1)}
+        </Text>
+      );
+    }
+    if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+      return (
+        <Text key={index} style={styles.inlineCodePill}>
+          {part.slice(1, -1)}
+        </Text>
+      );
+    }
+    return <Text key={index} style={baseStyle}>{part}</Text>;
+  });
+};
+
+const FormattedText = memo(({text, baseStyle}: {text: string; baseStyle: any}) => {
+  if (!text) return null;
+  const lines = text.split('\n');
+
+  return (
+    <View style={styles.formattedTextContainer}>
+      {lines.map((line, lineIndex) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return <View key={lineIndex} style={styles.paragraphSpacer} />;
         }
-        if (codeCopyTimer.current) {
-          clearTimeout(codeCopyTimer.current);
+        if (/^#+\s/.test(trimmed)) {
+          const headingText = trimmed.replace(/^#+\s*/, '');
+          return (
+            <Text key={lineIndex} style={styles.markdownHeading}>
+              {headingText}
+            </Text>
+          );
         }
-      },
-      [],
-    );
-    const copyMessage = useCallback(() => {
-      setClipboardText(item.text);
-      lightHaptic();
-      setCopiedMessageId(item.id);
+        if (/^[-*]\s/.test(trimmed)) {
+          const bulletText = trimmed.replace(/^[-*]\s*/, '');
+          return (
+            <View key={lineIndex} style={styles.bulletRow}>
+              <Text style={styles.bulletDot}>•</Text>
+              <Text style={styles.bulletContent}>
+                {renderInlineParts(bulletText, baseStyle)}
+              </Text>
+            </View>
+          );
+        }
+        return (
+          <Text key={lineIndex} style={[baseStyle, styles.paragraphText]}>
+            {renderInlineParts(line, baseStyle)}
+          </Text>
+        );
+      })}
+    </View>
+  );
+});
+
+const MessageBubble = memo(({
+  generationLabel,
+  isLive,
+  isThinkingHiding,
+  item,
+  thinkingLines,
+}: {
+  generationLabel: string;
+  isLive: boolean;
+  isThinkingHiding: boolean;
+  item: ChatMessage;
+  thinkingLines: string[];
+}) => {
+  const appear = useRef(new Animated.Value(0)).current;
+  const messageCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const codeCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [copiedCodeIndex, setCopiedCodeIndex] = useState<number | null>(null);
+  const isUser = item.role === 'user';
+  const isNotice = item.role === 'notice';
+  const messageSegments = useMemo(
+    () => (!isUser && item.text ? parseMessageSegments(item.text) : []),
+    [isUser, item.text],
+  );
+  const shouldShowThinking =
+    isLive && thinkingLines.length > 0 && (!item.text || isThinkingHiding);
+
+  useEffect(() => {
+    Animated.timing(appear, {
+      toValue: 1,
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [appear]);
+
+  useEffect(
+    () => () => {
       if (messageCopyTimer.current) {
         clearTimeout(messageCopyTimer.current);
       }
-      messageCopyTimer.current = setTimeout(
-        () => setCopiedMessageId(null),
-        1300,
-      );
-    }, [item.id, item.text]);
-    const shareMessage = useCallback(() => {
-      if (!item.text.trim()) {
-        return;
-      }
-      lightHaptic();
-      NativeShare.share({
-        message: item.text,
-      }).catch(error => {
-        console.warn('ChatScreen: failed to share text:', error);
-      });
-    }, [item.text]);
-    const copyCode = useCallback((code: string, index: number) => {
-      setClipboardText(code);
-      lightHaptic();
-      setCopiedCodeIndex(index);
       if (codeCopyTimer.current) {
         clearTimeout(codeCopyTimer.current);
       }
-      codeCopyTimer.current = setTimeout(() => setCopiedCodeIndex(null), 1300);
-    }, []);
-    return (
-      <Animated.View
-        style={[
-          styles.messageRow,
-          isUser && styles.userMessageRow,
-          {
-            opacity: appear,
-            transform: [
-              {
-                translateY: appear.interpolate({
-                  inputRange: [0, 1],
-                  outputRange: [12, 0],
-                }),
-              },
-            ],
-          },
-        ]}
-      >
-        {isNotice ? (
-          <View style={styles.compactDivider}>
-            <View style={styles.compactDividerLine} />
+    },
+    [],
+  );
+
+  const copyMessage = useCallback(() => {
+    setClipboardText(item.text);
+    lightHaptic();
+    setCopiedMessageId(item.id);
+    if (messageCopyTimer.current) {
+      clearTimeout(messageCopyTimer.current);
+    }
+    messageCopyTimer.current = setTimeout(() => setCopiedMessageId(null), 1300);
+  }, [item.id, item.text]);
+
+  const shareMessage = useCallback(() => {
+    if (!item.text.trim()) {
+      return;
+    }
+
+    lightHaptic();
+    NativeShare.share({message: item.text}).catch(error => {
+      console.warn('ChatScreen: failed to share text:', error);
+    });
+  }, [item.text]);
+
+  const copyCode = useCallback((code: string, index: number) => {
+    setClipboardText(code);
+    lightHaptic();
+    setCopiedCodeIndex(index);
+    if (codeCopyTimer.current) {
+      clearTimeout(codeCopyTimer.current);
+    }
+    codeCopyTimer.current = setTimeout(() => setCopiedCodeIndex(null), 1300);
+  }, []);
+
+  return (
+    <Animated.View
+      style={[
+        styles.messageRow,
+        isUser && styles.userMessageRow,
+        {
+          opacity: appear,
+          transform: [
+            {
+              translateY: appear.interpolate({
+                inputRange: [0, 1],
+                outputRange: [12, 0],
+              }),
+            },
+          ],
+        },
+      ]}>
+      {isNotice ? (
+        <View style={styles.compactDivider}>
+          <View style={styles.compactDividerLine} />
+          <View style={styles.compactDividerBadge}>
+            <Sparkles color="#34C759" size={13} strokeWidth={2.2} />
             <Text style={styles.compactDividerText}>{item.text}</Text>
-            <View style={styles.compactDividerLine} />
           </View>
-        ) : (
-          <>
-            {!isUser && (
-              <View style={styles.agentGlyphSmall}>
-                <Image
-                  source={logoSource}
-                  style={styles.agentLogoSmall}
-                  resizeMode="contain"
+          <View style={styles.compactDividerLine} />
+        </View>
+      ) : (
+        <>
+          {!isUser && (
+            <View style={styles.agentGlyphSmall}>
+              <Image source={logoSource} style={styles.agentLogoSmall} resizeMode="contain" />
+            </View>
+          )}
+          <View style={[styles.messageStack, isUser && styles.userMessageStack]}>
+            <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
+              {shouldShowThinking && (
+                <ThinkingText
+                  isHiding={isThinkingHiding}
+                  label={generationLabel}
+                  lines={thinkingLines}
                 />
-              </View>
-            )}
-            <View
-              style={[styles.messageStack, isUser && styles.userMessageStack]}
-            >
-              <View
-                style={[
-                  styles.messageBubble,
-                  isUser ? styles.userBubble : styles.assistantBubble,
-                ]}
-              >
-                {shouldShowThinking && (
-                  <ThinkingText
-                    isHiding={isThinkingHiding}
-                    label={generationLabel}
-                    lines={thinkingLines}
-                  />
-                )}
-                {isLive && !item.text ? null : (
-                  <View
-                    style={[
-                      styles.messageTextWrap,
-                      shouldShowThinking && styles.liveMessageTextWrap,
-                    ]}
-                  >
-                    {isUser ? (
-                      <FormattedText
-                        text={item.text}
-                        baseStyle={styles.messageText}
-                      />
-                    ) : (
-                      messageSegments.map((segment, index) =>
-                        segment.type === 'code' ? (
-                          <View key={`code_${index}`} style={styles.codeBlock}>
-                            <View style={styles.codeBlockHeader}>
-                              <View style={styles.codeHeaderLeft}>
-                                <Text style={styles.codeLanguage}>
-                                  {segment.language}
-                                </Text>
-                              </View>
-                              <TouchableOpacity
-                                activeOpacity={0.78}
-                                style={styles.codeCopyButton}
-                                onPress={() => copyCode(segment.content, index)}
-                              >
-                                <CopyStatusIcon
-                                  copied={copiedCodeIndex === index}
-                                />
-                              </TouchableOpacity>
+              )}
+              {isLive && !item.text ? null : (
+                <View
+                  style={[
+                    styles.messageTextWrap,
+                    shouldShowThinking && styles.liveMessageTextWrap,
+                  ]}>
+                  {isUser ? (
+                    <Text style={styles.messageText}>{item.text}</Text>
+                  ) : (
+                    messageSegments.map((segment, index) =>
+                      segment.type === 'code' ? (
+                        <View key={`code_${index}`} style={styles.codeBlock}>
+                          <View style={styles.codeBlockHeader}>
+                            <View style={styles.codeHeaderLeft}>
+                              <Text style={styles.codeLanguage}>{segment.language}</Text>
                             </View>
-                            <ScrollView
-                              horizontal
-                              showsHorizontalScrollIndicator={false}
-                              style={styles.codeScroll}
-                            >
-                              <View style={styles.codeEditorSurface}>
-                                {segment.content
-                                  .split('\n')
-                                  .map((line, lineIndex) => (
-                                    <View
-                                      key={`${index}_${lineIndex}`}
-                                      style={styles.codeLineRow}
-                                    >
-                                      <Text style={styles.codeLineNumber}>
-                                        {lineIndex + 1}
-                                      </Text>
-                                      <Text selectable style={styles.codeText}>
-                                        {line || ' '}
-                                      </Text>
-                                    </View>
-                                  ))}
-                              </View>
-                            </ScrollView>
+                            <TouchableOpacity
+                              activeOpacity={0.78}
+                              style={styles.codeCopyButtonRow}
+                              onPress={() => copyCode(segment.content, index)}>
+                              <CopyStatusIcon copied={copiedCodeIndex === index} />
+                              <Text style={styles.codeCopyText}>
+                                {copiedCodeIndex === index ? 'Copied!' : 'Copy code'}
+                              </Text>
+                            </TouchableOpacity>
                           </View>
-                        ) : (
-                          <FormattedText
-                            key={`text_${index}`}
-                            text={segment.content}
-                            baseStyle={[
-                              styles.messageText,
-                              styles.assistantTextSegment,
-                            ]}
-                          />
-                        ),
-                      )
-                    )}
-                    {!isUser && item.interrupted && (
-                      <Text style={styles.interruptedText}>Interrupted</Text>
-                    )}
-                  </View>
-                )}
-              </View>
-              {item.text.trim().length > 0 && !isLive && (
-                <View style={!isUser && styles.assistantActionsContainer}>
-                  <View
-                    style={[
-                      styles.messageActions,
-                      isUser && styles.userMessageActions,
-                    ]}
-                  >
-                    <TouchableOpacity
-                      activeOpacity={0.78}
-                      style={styles.messageActionButton}
-                      onPress={copyMessage}
-                    >
-                      <CopyStatusIcon copied={copiedMessageId === item.id} />
-                    </TouchableOpacity>
-                    {!isUser && (
-                      <TouchableOpacity
-                        activeOpacity={0.78}
-                        style={styles.messageActionButton}
-                        onPress={shareMessage}
-                      >
-                        <Share2 color="#8E8E93" size={15} strokeWidth={2.3} />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                  {!isUser && item.isTruncated && (
-                    <Text style={styles.truncatedNoticeText}>
-                      ⚠️ Response truncated. Try increasing tokens from settings
-                      for a complete answer.
-                    </Text>
+                          <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            style={styles.codeScroll}>
+                            <View style={styles.codeEditorSurface}>
+                              {segment.content.split('\n').map((line, lineIndex) => (
+                                <View key={`${index}_${lineIndex}`} style={styles.codeLineRow}>
+                                  <Text style={styles.codeLineNumber}>
+                                    {lineIndex + 1}
+                                  </Text>
+                                  <Text selectable style={styles.codeText}>
+                                    {line || ' '}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          </ScrollView>
+                        </View>
+                      ) : (
+                        <FormattedText
+                          key={`text_${index}`}
+                          text={segment.content}
+                          baseStyle={[styles.messageText, styles.assistantTextSegment]}
+                        />
+                      ),
+                    )
+                  )}
+                  {!isUser && item.interrupted && (
+                    <Text style={styles.interruptedText}>Interrupted</Text>
                   )}
                 </View>
               )}
             </View>
-          </>
-        )}
-      </Animated.View>
-    );
-  },
-);
-const ChatScreen: React.FC<Props> = ({ onBack }) => {
+            {item.text.trim().length > 0 && !isLive && (
+              <View style={!isUser && styles.assistantActionsContainer}>
+                <View style={[styles.messageActions, isUser && styles.userMessageActions]}>
+                  <TouchableOpacity
+                    activeOpacity={0.78}
+                    style={styles.messageActionButton}
+                    onPress={copyMessage}>
+                    <CopyStatusIcon copied={copiedMessageId === item.id} />
+                  </TouchableOpacity>
+                  {!isUser && (
+                    <TouchableOpacity
+                      activeOpacity={0.78}
+                      style={styles.messageActionButton}
+                      onPress={shareMessage}>
+                      <Share2 color="#8E8E93" size={15} strokeWidth={2.3} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+                {!isUser && item.isTruncated && (
+                  <Text style={styles.truncatedNoticeText}>
+                    ⚠️ Response truncated. Try increasing tokens from settings for a complete answer.
+                  </Text>
+                )}
+              </View>
+            )}
+          </View>
+        </>
+      )}
+    </Animated.View>
+  );
+});
+
+const ChatScreen: React.FC<Props> = ({onBack}) => {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const {width: windowWidth} = useWindowDimensions();
+
+  // Refs
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const inputRef = useRef<React.ElementRef<typeof TextInput>>(null);
   const composerHostRef = useRef<React.ElementRef<typeof View>>(null);
   const contextRef = useRef<LlamaContext | null>(null);
   const menuX = useRef(new Animated.Value(-380)).current;
-  const scrimOpacity = useMemo(() => {
-    return menuX.interpolate({
-      inputRange: [-380, 0],
-      outputRange: [0, 1],
-    });
-  }, [menuX]);
-  const infoX = useRef(new Animated.Value(480)).current;
-  const contextX = useRef(new Animated.Value(480)).current;
+  const infoX = useRef(new Animated.Value(windowWidth)).current;
+  const infoBackgroundSlide = useRef(new Animated.Value(0)).current;
+  const openInfoPanelFrameRef = useRef<number | null>(null);
+  const contextX = useRef(new Animated.Value(windowWidth)).current;
+  const openContextPanelFrameRef = useRef<number | null>(null);
   const sendScale = useRef(new Animated.Value(1)).current;
   const performanceToggleAnim = useRef(new Animated.Value(0)).current;
   const contextPulseAnim = useRef(new Animated.Value(1)).current;
@@ -1033,40 +1008,24 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
   const scrollFrameRef = useRef<number | null>(null);
   const restoreScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const lastScrollAtRef = useRef(0);
-  const thinkingRevealTimerRef = useRef<ReturnType<typeof setInterval> | null>(
-    null,
-  );
-  const thinkingFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
+  const lastStreamHapticAtRef = useRef(0);
+  const thinkingRevealTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const thinkingFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isChatScrollInteractingRef = useRef(false);
   const isChatAtBottomRef = useRef(true);
+  const isContentOverflowingRef = useRef(false);
   const androidKeyboardLiftRef = useRef(0);
-  const [activeThreadId, setActiveThreadId] = useState(createThreadId);
   const userScrolledUpRef = useRef(false);
   const layoutDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+
+  // State
+  const [activeThreadId, setActiveThreadId] = useState(createThreadId);
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const messagesRef = useRef<ChatMessage[]>([]);
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-  const setMessagesAndRef = useCallback((nextMessages: ChatMessage[]) => {
-    messagesRef.current = nextMessages;
-    setMessages(nextMessages);
-  }, []);
-  const updateMessagesAndRef = useCallback(
-    (updater: (currentMessages: ChatMessage[]) => ChatMessage[]) => {
-      setMessages(currentMessages => {
-        const nextMessages = updater(currentMessages);
-        messagesRef.current = nextMessages;
-        return nextMessages;
-      });
-    },
-    [],
-  );
   const [input, setInput] = useState('');
   const [modelName, setModelName] = useState('Rivo Local');
+  const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const [_status, setStatus] = useState('Private offline');
   const [memorySummary, setMemorySummary] = useState('');
   const [userMemory, setUserMemory] = useState('');
@@ -1074,38 +1033,31 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
   const [_responsePhase, setResponsePhase] = useState<ResponsePhase>('idle');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isInfoTransitionActive, setIsInfoTransitionActive] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [hasHydrated, setHasHydrated] = useState(false);
   const [isFreshEmptyThread, setIsFreshEmptyThread] = useState(false);
-  const [pendingDeleteThread, setPendingDeleteThread] =
-    useState<StoredThread | null>(null);
+  const [pendingDeleteThread, setPendingDeleteThread] = useState<StoredThread | null>(null);
   const [showModelSwitchAlert, setShowModelSwitchAlert] = useState(false);
   const [showThreadLimitAlert, setShowThreadLimitAlert] = useState(false);
   const [showLocalAccessAlert, setShowLocalAccessAlert] = useState(false);
   const [showLogoutConfirmAlert, setShowLogoutConfirmAlert] = useState(false);
   const [isContextOpen, setIsContextOpen] = useState(false);
+  const [isContextTransitionActive, setIsContextTransitionActive] = useState(false);
   const [localName, setLocalName] = useState('');
   const [localMemoryBullets, setLocalMemoryBullets] = useState('');
   const [maxTokens, setMaxTokens] = useState(1024);
   const [isPerformanceMode, setIsPerformanceMode] = useState(false);
   const [keepMessages, setKeepMessages] = useState(16);
   const [aiName, setAiName] = useState('Rivo');
-  const [aiPersonality, setAiPersonality] = useState(
-    'helpful, intelligent, friendly',
-  );
+  const [aiPersonality, setAiPersonality] = useState('helpful, intelligent, friendly');
   const [aiEmoji, setAiEmoji] = useState('✨');
-  const [aiEmojiQuantity, setAiEmojiQuantity] = useState<
-    'none' | 'low' | 'medium' | 'high'
-  >('medium');
+  const [aiEmojiQuantity, setAiEmojiQuantity] = useState<'none' | 'low' | 'medium' | 'high'>('medium');
   const [localAiName, setLocalAiName] = useState('Rivo');
-  const [localAiPersonality, setLocalAiPersonality] = useState(
-    'helpful, intelligent, friendly',
-  );
+  const [localAiPersonality, setLocalAiPersonality] = useState('helpful, intelligent, friendly');
   const [localAiEmoji, setLocalAiEmoji] = useState('✨');
-  const [localAiEmojiQuantity, setLocalAiEmojiQuantity] = useState<
-    'none' | 'low' | 'medium' | 'high'
-  >('medium');
+  const [localAiEmojiQuantity, setLocalAiEmojiQuantity] = useState<'none' | 'low' | 'medium' | 'high'>('medium');
   const [deviceSpecs, setDeviceSpecs] = useState({
     modelName: 'Detecting...',
     ramGB: 0,
@@ -1114,39 +1066,75 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
   const [thinkingTrace, setThinkingTrace] = useState<string[]>([]);
   const [visibleThinkingLineCount, setVisibleThinkingLineCount] = useState(1);
   const [isThinkingFading, setIsThinkingFading] = useState(false);
-  const [isAndroidKeyboardVisible, setIsAndroidKeyboardVisible] =
-    useState(false);
+  const [isCurrentThreadCodingLocked, setIsCurrentThreadCodingLocked] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [isAndroidKeyboardVisible, setIsAndroidKeyboardVisible] = useState(false);
   const [androidKeyboardLift, setAndroidKeyboardLift] = useState(0);
+
+  // Memos
+  const scrimOpacity = useMemo(() => {
+    return menuX.interpolate({
+      inputRange: [-380, 0],
+      outputRange: [0, 1],
+    });
+  }, [menuX]);
+
   const recentThreads = useMemo(
-    () =>
-      [...threads]
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, MAX_THREADS),
+    () => [...threads].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_THREADS),
     [threads],
   );
+
+  const activeCatalogModel = useMemo(
+    () => findCatalogModel(activeModelId, modelName),
+    [activeModelId, modelName],
+  );
+
+  // Callbacks
+  const setMessagesAndRef = useCallback((nextMessages: ChatMessage[]) => {
+    messagesRef.current = nextMessages;
+    setMessages(nextMessages);
+  }, []);
+
+  const updateMessagesAndRef = useCallback((
+    updater: (currentMessages: ChatMessage[]) => ChatMessage[],
+  ) => {
+    setMessages(currentMessages => {
+      const nextMessages = updater(currentMessages);
+      messagesRef.current = nextMessages;
+      return nextMessages;
+    });
+  }, []);
+
+  // Effects
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   const clearRestoreScrollTimers = useCallback(() => {
     restoreScrollTimersRef.current.forEach(clearTimeout);
     restoreScrollTimersRef.current = [];
   }, []);
+
   const clearThinkingFadeTimer = useCallback(() => {
     if (thinkingFadeTimerRef.current) {
       clearTimeout(thinkingFadeTimerRef.current);
       thinkingFadeTimerRef.current = null;
     }
   }, []);
+
   const requestRestoreScrollToEnd = useCallback(() => {
     if (!pendingRestoreScrollRef.current) {
       return;
     }
+
     clearRestoreScrollTimers();
     RESTORE_SCROLL_DELAYS.forEach((delay, index) => {
       const timer = setTimeout(() => {
         if (!pendingRestoreScrollRef.current) {
           return;
         }
-        listRef.current?.scrollToEnd({
-          animated: false,
-        });
+
+        listRef.current?.scrollToEnd({animated: false});
         if (index === RESTORE_SCROLL_DELAYS.length - 1) {
           didInitialScrollRef.current = true;
           pendingRestoreScrollRef.current = false;
@@ -1155,12 +1143,14 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       restoreScrollTimersRef.current.push(timer);
     });
   }, [clearRestoreScrollTimers]);
+
   useEffect(() => {
     const hydrate = async () => {
       const [
         storedThreads,
         storedActiveId,
         storedModelName,
+        storedModelId,
         storedAiName,
         storedAiPersonality,
         storedAiEmoji,
@@ -1172,6 +1162,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         AsyncStorage.getItem(CHAT_THREADS_KEY),
         AsyncStorage.getItem(ACTIVE_THREAD_KEY),
         AsyncStorage.getItem('downloadedModelName'),
+        AsyncStorage.getItem('downloadedModelId'),
         AsyncStorage.getItem('rivo.neural.aiName'),
         AsyncStorage.getItem('rivo.neural.aiPersonality'),
         AsyncStorage.getItem('rivo.neural.aiEmoji'),
@@ -1180,17 +1171,15 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         AsyncStorage.getItem('rivo.neural.keepMessages'),
         AsyncStorage.getItem('rivo.neural.isPerformanceMode'),
       ]);
-      const parsedThreads: StoredThread[] = storedThreads
-        ? JSON.parse(storedThreads)
-        : [];
-      const sortedThreads = [...parsedThreads].sort(
-        (a, b) => b.updatedAt - a.updatedAt,
-      );
+
+      const parsedThreads: StoredThread[] = storedThreads ? JSON.parse(storedThreads) : [];
+      const sortedThreads = [...parsedThreads].sort((a, b) => b.updatedAt - a.updatedAt);
       const storedActiveThread = storedActiveId
         ? parsedThreads.find(thread => thread.id === storedActiveId)
         : undefined;
       const activeThread = storedActiveThread ?? sortedThreads[0];
       const nextActiveId = activeThread?.id ?? createThreadId();
+
       pendingRestoreScrollRef.current = Boolean(activeThread?.messages.length);
       didInitialScrollRef.current = false;
       threadsRef.current = parsedThreads;
@@ -1200,24 +1189,38 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       setMemorySummary(activeThread?.summary ?? '');
       setUserMemory(activeThread?.userMemory ?? '');
       setCompactedCount(activeThread?.compactedCount ?? 0);
+      setIsCurrentThreadCodingLocked(Boolean(activeThread?.isCodingLocked));
       setIsFreshEmptyThread(false);
-      if (storedModelName) {
-        setModelName(storedModelName);
+      if (storedModelName || storedModelId) {
+        // Cross-reference catalog so the name is always the canonical display name
+        const catalogEntry = findCatalogModel(storedModelId, storedModelName);
+        const resolvedName =
+          (catalogEntry && catalogEntry.name) || storedModelName || 'Rivo Local';
+        setModelName(resolvedName);
+        if (storedModelId || catalogEntry?.id) {
+          setActiveModelId(storedModelId || catalogEntry?.id || null);
+        }
       }
+
+      // Hydrate AI character states
       if (storedAiName) {
         setAiName(storedAiName);
+        setLocalAiName(storedAiName);
       }
       if (storedAiPersonality) {
         setAiPersonality(storedAiPersonality);
+        setLocalAiPersonality(storedAiPersonality);
       }
       if (storedAiEmoji) {
         setAiEmoji(storedAiEmoji);
+        setLocalAiEmoji(storedAiEmoji);
       }
       if (storedAiEmojiQuantity) {
-        setAiEmojiQuantity(
-          storedAiEmojiQuantity as 'none' | 'low' | 'medium' | 'high',
-        );
+        setAiEmojiQuantity(storedAiEmojiQuantity as 'none' | 'low' | 'medium' | 'high');
+        setLocalAiEmojiQuantity(storedAiEmojiQuantity as 'none' | 'low' | 'medium' | 'high');
       }
+
+      // Hydrate optimization settings if they exist
       if (storedMaxTokens) {
         const val = Number(storedMaxTokens);
         setMaxTokens(val < 512 ? 1024 : val);
@@ -1230,6 +1233,8 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         setIsPerformanceMode(isPerf);
         performanceToggleAnim.setValue(isPerf ? 1 : 0);
       }
+      
+      // Fetch device hardware specifications
       try {
         const [totalMemory, deviceModel] = await Promise.all([
           DeviceInfo.getTotalMemory().catch(() => 0),
@@ -1241,6 +1246,8 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           ramGB,
           ramLabel: ramGB > 0 ? `${ramGB}GB RAM` : 'Unknown RAM',
         });
+        
+        // Dynamic generation token recommendation (ONLY if no stored user preference exists!)
         if (!storedMaxTokens || !storedKeepMessages) {
           if (ramGB >= 8) {
             if (!storedMaxTokens) setMaxTokens(1024);
@@ -1256,12 +1263,15 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       } catch (err) {
         console.warn('ChatScreen: failed to fetch device specs:', err);
       }
+
       setHasHydrated(true);
     };
+
     hydrate().catch(error => {
       console.warn('ChatScreen: failed to hydrate chat storage:', error);
       setHasHydrated(true);
     });
+
     return () => {
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
@@ -1277,20 +1287,18 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       contextRef.current?.release();
       contextRef.current = null;
     };
-  }, [
-    clearRestoreScrollTimers,
-    clearThinkingFadeTimer,
-    setMessagesAndRef,
-    performanceToggleAnim,
-  ]);
+  }, [clearRestoreScrollTimers, clearThinkingFadeTimer, setMessagesAndRef, performanceToggleAnim]);
+
   useEffect(() => {
     if (thinkingRevealTimerRef.current) {
       clearInterval(thinkingRevealTimerRef.current);
       thinkingRevealTimerRef.current = null;
     }
+
     if (!isGenerating || thinkingTrace.length <= 1) {
       return;
     }
+
     thinkingRevealTimerRef.current = setInterval(() => {
       setVisibleThinkingLineCount(current => {
         if (current >= thinkingTrace.length) {
@@ -1300,9 +1308,11 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           }
           return current;
         }
+
         return current + 1;
       });
     }, 620);
+
     return () => {
       if (thinkingRevealTimerRef.current) {
         clearInterval(thinkingRevealTimerRef.current);
@@ -1310,9 +1320,11 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       }
     };
   }, [isGenerating, thinkingTrace.length]);
+
   useEffect(() => {
     threadsRef.current = threads;
   }, [threads]);
+
   useEffect(() => {
     Animated.timing(performanceToggleAnim, {
       toValue: isPerformanceMode ? 1 : 0,
@@ -1321,6 +1333,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       useNativeDriver: true,
     }).start();
   }, [isPerformanceMode, performanceToggleAnim]);
+
   useEffect(() => {
     contextPulseAnim.setValue(1.08);
     Animated.spring(contextPulseAnim, {
@@ -1330,9 +1343,11 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       useNativeDriver: true,
     }).start();
   }, [keepMessages, isPerformanceMode, messages.length, contextPulseAnim]);
+
   useEffect(() => {
     androidKeyboardLiftRef.current = androidKeyboardLift;
   }, [androidKeyboardLift]);
+
   useEffect(() => {
     Animated.timing(menuX, {
       toValue: isMenuOpen ? 0 : -380,
@@ -1341,6 +1356,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       useNativeDriver: true,
     }).start();
   }, [isMenuOpen, menuX]);
+
   const dismissComposerKeyboard = useCallback(() => {
     inputRef.current?.blur();
     Keyboard.dismiss();
@@ -1353,59 +1369,131 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       Keyboard.dismiss();
     }, 80);
   }, []);
+
   useEffect(() => {
     if (isMenuOpen || isInfoOpen) {
       dismissComposerKeyboard();
     }
   }, [dismissComposerKeyboard, isInfoOpen, isMenuOpen]);
+
   const openSideMenu = useCallback(() => {
     dismissComposerKeyboard();
     setIsMenuOpen(true);
   }, [dismissComposerKeyboard]);
+
   const openInfoPanel = useCallback(() => {
     dismissComposerKeyboard();
-    setIsInfoOpen(true);
+    // Stop any running close animation
+    infoX.stopAnimation();
+    infoBackgroundSlide.stopAnimation();
+    if (openInfoPanelFrameRef.current) {
+      cancelAnimationFrame(openInfoPanelFrameRef.current);
+      openInfoPanelFrameRef.current = null;
+    }
     infoX.setValue(windowWidth);
-    Animated.timing(infoX, {
-      toValue: 0,
-      duration: 280,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [dismissComposerKeyboard, infoX, windowWidth]);
+    infoBackgroundSlide.setValue(0);
+    setIsInfoTransitionActive(true);
+    setIsInfoOpen(true);
+    // Defer to next rAF so React state (isInfoOpen=true) commits before animation
+    openInfoPanelFrameRef.current = requestAnimationFrame(() => {
+      openInfoPanelFrameRef.current = null;
+      Animated.parallel([
+        Animated.timing(infoX, {
+          toValue: 0,
+          duration: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(infoBackgroundSlide, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(({finished}) => {
+        if (finished) setIsInfoTransitionActive(false);
+      });
+    });
+  }, [dismissComposerKeyboard, infoBackgroundSlide, infoX, windowWidth]);
+
   const closeInfoPanel = useCallback(() => {
-    Animated.timing(infoX, {
-      toValue: windowWidth,
-      duration: 240,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(() => setIsInfoOpen(false));
-  }, [infoX, windowWidth]);
+    if (openInfoPanelFrameRef.current) {
+      cancelAnimationFrame(openInfoPanelFrameRef.current);
+      openInfoPanelFrameRef.current = null;
+    }
+    setIsInfoTransitionActive(true);
+    Animated.parallel([
+      Animated.timing(infoX, {
+        toValue: windowWidth,
+        duration: 200,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(infoBackgroundSlide, {
+        toValue: 0,
+        duration: 200,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(({finished}) => {
+      setIsInfoTransitionActive(false);
+      if (finished) setIsInfoOpen(false);
+    });
+  }, [infoBackgroundSlide, infoX, windowWidth]);
+
   const openContextPanel = useCallback(() => {
     dismissComposerKeyboard();
+
+    // Parse name and other facts from current userMemory
     const currentName = extractNameFromMemory(userMemory);
     setLocalName(currentName);
+
     const otherBullets = userMemory
       .split('\n')
       .map(line => line.trim())
       .filter(line => line && !line.toLowerCase().startsWith('user name:'))
       .join('\n');
     setLocalMemoryBullets(otherBullets);
+
+    // Populate draft AI settings from actual active values
     setLocalAiName(aiName);
     setLocalAiPersonality(aiPersonality);
     setLocalAiEmoji(aiEmoji);
     setLocalAiEmojiQuantity(aiEmojiQuantity);
-    setIsContextOpen(true);
+
+    contextX.stopAnimation();
+    infoBackgroundSlide.stopAnimation();
+    if (openContextPanelFrameRef.current) {
+      cancelAnimationFrame(openContextPanelFrameRef.current);
+      openContextPanelFrameRef.current = null;
+    }
     contextX.setValue(windowWidth);
-    Animated.timing(contextX, {
-      toValue: 0,
-      duration: 280,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
+    infoBackgroundSlide.setValue(0);
+    setIsContextTransitionActive(true);
+    setIsContextOpen(true);
+    openContextPanelFrameRef.current = requestAnimationFrame(() => {
+      openContextPanelFrameRef.current = null;
+      Animated.parallel([
+        Animated.timing(contextX, {
+          toValue: 0,
+          duration: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+        Animated.timing(infoBackgroundSlide, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }),
+      ]).start(({finished}) => {
+        if (finished) setIsContextTransitionActive(false);
+      });
+    });
   }, [
     dismissComposerKeyboard,
     contextX,
+    infoBackgroundSlide,
     windowWidth,
     userMemory,
     aiName,
@@ -1413,21 +1501,41 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     aiEmoji,
     aiEmojiQuantity,
   ]);
+
   const closeContextPanel = useCallback(() => {
-    Animated.timing(contextX, {
-      toValue: windowWidth,
-      duration: 240,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(() => setIsContextOpen(false));
-  }, [contextX, windowWidth]);
+    if (openContextPanelFrameRef.current) {
+      cancelAnimationFrame(openContextPanelFrameRef.current);
+      openContextPanelFrameRef.current = null;
+    }
+    setIsContextTransitionActive(true);
+    Animated.parallel([
+      Animated.timing(contextX, {
+        toValue: windowWidth,
+        duration: 200,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(infoBackgroundSlide, {
+        toValue: 0,
+        duration: 200,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(({finished}) => {
+      setIsContextTransitionActive(false);
+      if (finished) setIsContextOpen(false);
+    });
+  }, [contextX, infoBackgroundSlide, windowWidth]);
+
   const confirmLogoutAndWipe = useCallback(async () => {
     setShowLogoutConfirmAlert(false);
+
     try {
       if (isGenerating) {
         await contextRef.current?.stopCompletion();
       }
       await contextRef.current?.clearCache();
+
       generationLockRef.current = false;
       stopRequestedRef.current = false;
       setIsGenerating(false);
@@ -1436,38 +1544,42 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       setThinkingTrace([]);
       setVisibleThinkingLineCount(1);
       setIsThinkingFading(false);
+
+      // Get the model file names before clearing AsyncStorage
       const [selectedFileName, downloadedFileName] = await Promise.all([
         AsyncStorage.getItem('selectedModelFileName'),
         AsyncStorage.getItem('downloadedModelFileName'),
       ]);
+
+      // Stop downloader tasks to prevent any active downloads from continuing
       try {
         const tasks = await getExistingDownloadTasks();
         for (const task of tasks) {
-          await task
-            .stop()
-            .catch(err =>
-              console.warn('ChatScreen: failed to stop task:', err),
-            );
+          console.log('ChatScreen: stopping active download task on logout:', task.id);
+          await task.stop().catch(err => console.warn('ChatScreen: failed to stop task:', err));
         }
       } catch (dlError) {
         console.warn('ChatScreen: failed to clear downloader tasks:', dlError);
       }
+
+      // Delete the local model files from disk
       if (selectedFileName) {
+        console.log('ChatScreen: deleting local model file:', selectedFileName);
         await deleteModelFile(selectedFileName);
       }
       if (downloadedFileName && downloadedFileName !== selectedFileName) {
+        console.log('ChatScreen: deleting local downloaded model file:', downloadedFileName);
         await deleteModelFile(downloadedFileName);
       }
+
       await AsyncStorage.clear();
+
       const user = auth().currentUser;
       if (user) {
         try {
           await user.delete();
         } catch (deleteError) {
-          console.warn(
-            'ChatScreen: account delete failed, falling back to sign out:',
-            deleteError,
-          );
+          console.warn('ChatScreen: account delete failed, falling back to sign out:', deleteError);
           await auth().signOut();
         }
       } else {
@@ -1475,13 +1587,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       }
     } catch (error) {
       console.warn('ChatScreen: logout cleanup failed:', error);
-      await auth()
-        .signOut()
-        .catch(signOutError => {
-          console.warn('ChatScreen: sign out failed:', signOutError);
-        });
+      await auth().signOut().catch(signOutError => {
+        console.warn('ChatScreen: sign out failed:', signOutError);
+      });
     }
   }, [clearThinkingFadeTimer, isGenerating]);
+
   useEffect(() => {
     const nextName = localName.trim();
     const nameLine = nextName ? `User name: ${nextName}.` : '';
@@ -1491,24 +1602,25 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       .filter(Boolean)
       .join('\n');
     const nextMemory = [nameLine, bulletLines].filter(Boolean).join('\n');
+
     setUserMemory(current => (current === nextMemory ? current : nextMemory));
   }, [localMemoryBullets, localName]);
+
   useEffect(() => {
+    if (!hasHydrated) {
+      return;
+    }
+
     const cleanedAiName = localAiName.trim() || 'Rivo';
-    const cleanedAiPersonality =
-      localAiPersonality.trim() || 'helpful, intelligent, friendly';
+    const cleanedAiPersonality = localAiPersonality.trim() || 'helpful, intelligent, friendly';
     const cleanedAiEmoji = localAiEmoji.trim() || '✨';
     const nextAiEmojiQuantity = localAiEmojiQuantity;
+
     setAiName(current => (current === cleanedAiName ? current : cleanedAiName));
-    setAiPersonality(current =>
-      current === cleanedAiPersonality ? current : cleanedAiPersonality,
-    );
-    setAiEmoji(current =>
-      current === cleanedAiEmoji ? current : cleanedAiEmoji,
-    );
-    setAiEmojiQuantity(current =>
-      current === nextAiEmojiQuantity ? current : nextAiEmojiQuantity,
-    );
+    setAiPersonality(current => (current === cleanedAiPersonality ? current : cleanedAiPersonality));
+    setAiEmoji(current => (current === cleanedAiEmoji ? current : cleanedAiEmoji));
+    setAiEmojiQuantity(current => (current === nextAiEmojiQuantity ? current : nextAiEmojiQuantity));
+
     const persistTimer = setTimeout(() => {
       AsyncStorage.multiSet([
         ['rivo.neural.aiName', cleanedAiName],
@@ -1522,8 +1634,10 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         console.warn('ChatScreen: failed to save global neural settings:', err);
       });
     }, 120);
+
     return () => clearTimeout(persistTimer);
   }, [
+    hasHydrated,
     isPerformanceMode,
     keepMessages,
     localAiEmoji,
@@ -1532,49 +1646,53 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     localAiPersonality,
     maxTokens,
   ]);
+
   const openInfoLink = useCallback((url: string) => {
     Linking.openURL(url).catch(error => {
       console.warn('ChatScreen: failed to open info link:', error);
     });
   }, []);
+
   useEffect(() => {
     if (!hasHydrated || isGenerating) {
       return;
     }
+
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
     }
+
     saveTimerRef.current = setTimeout(async () => {
       const currentThreads = threadsRef.current;
-      const previousActiveThread = currentThreads.find(
-        thread => thread.id === activeThreadId,
-      );
+      const previousActiveThread = currentThreads.find(thread => thread.id === activeThreadId);
       const didThreadContentChange =
         !previousActiveThread ||
         previousActiveThread.messages !== messages ||
         previousActiveThread.summary !== memorySummary ||
         previousActiveThread.compactedCount !== compactedCount ||
         previousActiveThread.userMemory !== userMemory;
+
       if (messages.length && !didThreadContentChange) {
         await AsyncStorage.setItem(ACTIVE_THREAD_KEY, activeThreadId);
         return;
       }
+
       const updatedThreads = messages.length
         ? [
             {
               id: activeThreadId,
               title: previousActiveThread?.title ?? makeTitle(messages),
-              updatedAt: didThreadContentChange
-                ? Date.now()
-                : previousActiveThread.updatedAt,
+              updatedAt: didThreadContentChange ? Date.now() : previousActiveThread.updatedAt,
               messages,
               summary: memorySummary,
               compactedCount,
               userMemory,
+              isCodingLocked: isCurrentThreadCodingLocked,
             },
             ...currentThreads.filter(thread => thread.id !== activeThreadId),
           ].slice(0, MAX_THREADS)
         : currentThreads.filter(thread => thread.id !== activeThreadId);
+
       threadsRef.current = updatedThreads;
       setThreads(updatedThreads);
       await AsyncStorage.multiSet([
@@ -1582,34 +1700,30 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         [ACTIVE_THREAD_KEY, activeThreadId],
       ]);
     }, 350);
-  }, [
-    activeThreadId,
-    compactedCount,
-    hasHydrated,
-    isGenerating,
-    memorySummary,
-    messages,
-    userMemory,
-  ]);
+  }, [activeThreadId, compactedCount, hasHydrated, isGenerating, memorySummary, messages, userMemory]);
+
   const ensureModel = useCallback(async () => {
     if (contextRef.current) {
       return contextRef.current;
     }
+
     const installedModel = await getSelectedInstalledModel();
     if (!installedModel) {
       throw new Error('No downloaded model found. Install a model first.');
     }
+
     setIsModelLoading(true);
     setStatus('Warming engine');
     setModelName(installedModel.model.name);
-    const modelPath =
-      installedModel.filePath ?? getModelFilePath(installedModel.fileName);
+
+    const modelPath = installedModel.filePath ?? getModelFilePath(installedModel.fileName);
     const modelUri = `file://${modelPath}`;
     const baseModelParams = {
       model: modelUri,
       n_gpu_layers: 0,
       use_mlock: false,
     };
+
     let context: LlamaContext;
     try {
       context = await initLlama(
@@ -1623,10 +1737,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         progress => setStatus(`Warming ${Math.round(progress * 100)}%`),
       );
     } catch (error) {
-      console.warn(
-        'ChatScreen: mmap model load failed, retrying safer load:',
-        error,
-      );
+      console.warn('ChatScreen: mmap model load failed, retrying safer load:', error);
       setStatus('Retrying engine');
       context = await initLlama(
         {
@@ -1639,11 +1750,13 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         progress => setStatus(`Retrying ${Math.round(progress * 100)}%`),
       );
     }
+
     contextRef.current = context;
     setStatus('Private offline');
     setIsModelLoading(false);
     return context;
   }, []);
+
   const scrollToEnd = useCallback((animated = true, force = false) => {
     if (!force && userScrolledUpRef.current) {
       return;
@@ -1652,17 +1765,22 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     if (!force && now - lastScrollAtRef.current < SCROLL_THROTTLE_MS) {
       return;
     }
+
     lastScrollAtRef.current = now;
     if (scrollFrameRef.current !== null) {
       cancelAnimationFrame(scrollFrameRef.current);
     }
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      listRef.current?.scrollToEnd({
-        animated,
-      });
+      // Content-size updates can schedule this callback just before a drag
+      // starts. Never let that stale request pull the list from under a swipe.
+      if (!force && (userScrolledUpRef.current || isChatScrollInteractingRef.current)) {
+        return;
+      }
+      listRef.current?.scrollToEnd({animated});
     });
   }, []);
+
   const handleListLayoutSettled = useCallback(() => {
     if (!hasHydrated || didInitialScrollRef.current || messages.length === 0) {
       return;
@@ -1676,28 +1794,25 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     }
     layoutDebounceRef.current = setTimeout(() => {
       if (!didInitialScrollRef.current) {
-        listRef.current?.scrollToEnd({
-          animated: true,
-        });
+        listRef.current?.scrollToEnd({animated: true});
         didInitialScrollRef.current = true;
       }
     }, 150);
   }, [hasHydrated, messages.length, requestRestoreScrollToEnd]);
+
   useEffect(() => {
     if (hasHydrated && messages.length > 0 && pendingRestoreScrollRef.current) {
       requestRestoreScrollToEnd();
     }
   }, [hasHydrated, messages.length, requestRestoreScrollToEnd]);
+
   const handleChatContentSizeChange = useCallback(() => {
     handleListLayoutSettled();
-    if (
-      isGenerating &&
-      !userScrolledUpRef.current &&
-      !isChatScrollInteractingRef.current
-    ) {
+    if (isGenerating && !userScrolledUpRef.current && !isChatScrollInteractingRef.current) {
       scrollToEnd(false);
     }
   }, [handleListLayoutSettled, isGenerating, scrollToEnd]);
+
   const handleChatScrollInteractionEnd = useCallback(() => {
     isChatScrollInteractingRef.current = false;
     if (isChatAtBottomRef.current) {
@@ -1707,123 +1822,34 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       }
     }
   }, [isGenerating, scrollToEnd]);
+
   useEffect(() => {
-    const keyboardTimers: ReturnType<typeof setTimeout>[] = [];
-    const keyboardEvent =
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const keyboardHideEvent =
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const clearKeyboardTimers = () => {
-      keyboardTimers.splice(0).forEach(clearTimeout);
-    };
-    const updateAndroidKeyboardLift = (event?: {
-      endCoordinates?: {
-        height?: number;
-        screenY?: number;
-      };
-    }) => {
-      if (Platform.OS !== 'android') {
-        return;
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const onShow = (e: any) => {
+      const height = e?.endCoordinates?.height ?? 0;
+      if (height > 0) {
+        setKeyboardHeight(height);
       }
-      const keyboardHeight = Math.max(
-        0,
-        Math.round(event?.endCoordinates?.height ?? 0),
-      );
-      const keyboardTop = Math.round(
-        typeof event?.endCoordinates?.screenY === 'number' &&
-          event.endCoordinates.screenY > 0
-          ? event.endCoordinates.screenY
-          : Dimensions.get('screen').height - keyboardHeight,
-      );
-      if (
-        !keyboardHeight ||
-        !Number.isFinite(keyboardTop) ||
-        keyboardTop <= 0
-      ) {
-        setAndroidKeyboardLift(0);
-        return;
-      }
-      ANDROID_KEYBOARD_RECHECK_DELAYS.forEach(delay => {
-        const timer = setTimeout(() => {
-          const currentWindowHeight = Dimensions.get('window').height;
-          const fallbackLift = Math.max(
-            0,
-            currentWindowHeight >
-              keyboardTop + ANDROID_KEYBOARD_RESIZE_TOLERANCE
-              ? Math.ceil(
-                  currentWindowHeight - keyboardTop + ANDROID_KEYBOARD_GAP,
-                )
-              : 0,
-          );
-          const setLift = (nextLift: number) => {
-            setAndroidKeyboardLift(current =>
-              Math.abs(current - nextLift) <= 1 ? current : nextLift,
-            );
-          };
-          if (!composerHostRef.current) {
-            setLift(fallbackLift);
-            return;
-          }
-          composerHostRef.current.measureInWindow((_x, y, _width, height) => {
-            if (height <= 0) {
-              setLift(fallbackLift);
-              return;
-            }
-            const composerBottomWithoutLift =
-              y + height + androidKeyboardLiftRef.current;
-            const measuredLift = Math.max(
-              0,
-              Math.ceil(
-                composerBottomWithoutLift - keyboardTop + ANDROID_KEYBOARD_GAP,
-              ),
-            );
-            setLift(
-              measuredLift > ANDROID_KEYBOARD_RESIZE_TOLERANCE
-                ? measuredLift
-                : 0,
-            );
-          });
-        }, delay);
-        keyboardTimers.push(timer);
-      });
-    };
-    const scrollAfterKeyboardOpens = (event?: {
-      endCoordinates?: {
-        height?: number;
-        screenY?: number;
-      };
-    }) => {
-      clearKeyboardTimers();
-      if (Platform.OS === 'android') {
-        setIsAndroidKeyboardVisible(true);
-        updateAndroidKeyboardLift(event);
-      }
-      scrollToEnd(true, true);
-      keyboardTimers.push(setTimeout(() => scrollToEnd(true, true), 90));
-      keyboardTimers.push(setTimeout(() => scrollToEnd(true, true), 240));
-      keyboardTimers.push(setTimeout(() => scrollToEnd(true, true), 360));
-    };
-    const handleKeyboardHide = () => {
-      clearKeyboardTimers();
-      if (Platform.OS === 'android') {
-        setIsAndroidKeyboardVisible(false);
-        setAndroidKeyboardLift(0);
+      if (!userScrolledUpRef.current) {
+        scrollToEnd(true);
       }
     };
-    const keyboardSubscription = Keyboard.addListener(
-      keyboardEvent,
-      scrollAfterKeyboardOpens,
-    );
-    const keyboardHideSubscription = Keyboard.addListener(
-      keyboardHideEvent,
-      handleKeyboardHide,
-    );
+
+    const onHide = () => {
+      setKeyboardHeight(0);
+    };
+
+    const showSub = Keyboard.addListener(showEvent, onShow);
+    const hideSub = Keyboard.addListener(hideEvent, onHide);
+
     return () => {
-      keyboardSubscription.remove();
-      keyboardHideSubscription.remove();
-      clearKeyboardTimers();
+      showSub.remove();
+      hideSub.remove();
     };
   }, [scrollToEnd]);
+
   const pulseSend = useCallback(() => {
     Animated.sequence([
       Animated.timing(sendScale, {
@@ -1840,291 +1866,369 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       }),
     ]).start();
   }, [sendScale]);
-  const compactThreadMemory = useCallback(
-    async (
-      context: LlamaContext,
-      completeMessages: ChatMessage[],
-      nextUserMemory: string,
-    ) => {
-      const compactableMessages = completeMessages.filter(
-        item => item.role !== 'notice',
-      );
-      const activeCompactLimit = isPerformanceMode ? 10 : 40;
-      if (compactableMessages.length < activeCompactLimit) {
-        return {
-          messages: compactableMessages,
-          summary: memorySummary,
-        };
-      }
-      const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
-      const olderMessages = compactableMessages.slice(0, -activeKeepMessages);
-      const recentMessages = compactableMessages.slice(-activeKeepMessages);
-      setStatus('Compacting memory');
-      try {
-        const result = await context.completion({
-          messages: [
-            {
-              role: 'system',
-              content:
-                'Compact this chat into durable memory for a local assistant. Keep facts, user preferences, names, goals, decisions, and open tasks. Do not invent anything. Use tight bullet notes.',
-            },
-            {
-              role: 'user',
-              content: [
-                memorySummary ? `Previous memory:\n${memorySummary}` : '',
-                nextUserMemory ? `Known user memory:\n${nextUserMemory}` : '',
-                `Conversation to compact:\n${serializeMessages(
-                  olderMessages,
-                  aiName,
-                )}`,
-              ]
-                .filter(Boolean)
-                .join('\n\n'),
-            },
-          ],
-          n_predict: 220,
-          temperature: 0.15,
-          top_p: 0.8,
-          top_k: 30,
-          penalty_repeat: 1.15,
-          stop: STOP_WORDS,
-          force_pure_content: true,
-        });
-        const compactedSummary = getCompletionText(result, '');
-        const nextSummary = compactedSummary || memorySummary;
-        setMemorySummary(nextSummary);
-        setCompactedCount(current => current + olderMessages.length);
-        setMessagesAndRef(recentMessages);
-        setStatus(`Memory compacted: ${olderMessages.length} msgs`);
-        return {
-          messages: recentMessages,
-          summary: nextSummary,
-        };
-      } catch (error) {
-        console.warn('ChatScreen: compaction failed:', error);
-        setStatus('Memory kept raw');
-        return {
-          messages: compactableMessages,
-          summary: memorySummary,
-        };
-      }
-    },
-    [memorySummary, setMessagesAndRef, isPerformanceMode, keepMessages, aiName],
-  );
-  const sendMessage = useCallback(
-    async (overridePrompt?: string) => {
-      const prompt = (overridePrompt ?? input).trim();
-      if (!prompt || generationLockRef.current) {
-        return;
-      }
-      generationLockRef.current = true;
-      stopRequestedRef.current = false;
-      didFeelReplyStartRef.current = false;
-      setIsFreshEmptyThread(false);
-      lightHaptic();
-      pulseSend();
-      const now = Date.now();
-      const userMessage: ChatMessage = {
-        id: `${now}_user`,
-        role: 'user',
-        text: prompt,
-      };
-      const nextUserMemory = extractUserMemory(prompt, userMemory);
-      clearThinkingFadeTimer();
-      setIsThinkingFading(false);
-      setVisibleThinkingLineCount(1);
-      if (nextUserMemory !== userMemory) {
-        setUserMemory(nextUserMemory);
-      }
-      const rememberedName = extractNameFromMemory(nextUserMemory);
-      const assistantId = `${now}_assistant`;
-      userScrolledUpRef.current = false;
-      const assistantMessage: ChatMessage = {
-        id: assistantId,
-        role: 'assistant',
-        text: '',
-      };
-      let baseMessages = messagesRef.current.filter(
-        item => item.role !== 'notice',
-      );
-      const isFirstMessage = baseMessages.length === 0;
-      setThinkingTrace(
-        buildThinkingTrace(
-          prompt,
-          Boolean(nextUserMemory || memorySummary),
-          isFirstMessage,
-        ),
-      );
-      let streamedText = '';
-      let lastVisibleStreamText = '';
-      let didStartThinkingFade = false;
-      let activeAssistantId = assistantId;
-      let activeResponsePrefix = '';
-      let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
-      try {
-        let activeMemorySummary = memorySummary;
-        setInput('');
-        setIsGenerating(true);
-        setResponsePhase('thinking');
-        setStatus('Thinking');
-        setMessagesAndRef([
-          ...messagesRef.current,
-          userMessage,
-          assistantMessage,
-        ]);
-        scrollToEnd(true, true);
-        const context = await ensureModel();
-        if (justStoppedRef.current) {
-          justStoppedRef.current = false;
-          await new Promise<void>(resolve => setTimeout(resolve, 100));
-        }
-        const activeCompactLimit = isPerformanceMode ? 10 : 40;
-        if (baseMessages.length >= activeCompactLimit) {
-          const compactNotice: ChatMessage = {
-            id: `${now}_compact_notice`,
-            role: 'notice',
-            text: 'Compacting context...',
-          };
-          setMessagesAndRef([...messagesRef.current, compactNotice]);
-          const compacted = await compactThreadMemory(
-            context,
-            baseMessages,
-            nextUserMemory,
-          );
-          const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
-          baseMessages =
-            compacted?.messages ?? baseMessages.slice(-activeKeepMessages);
-          activeMemorySummary = compacted?.summary ?? activeMemorySummary;
-          const compactedNotice: ChatMessage = {
-            id: `${now}_compact_done`,
-            role: 'notice',
-            text: 'Context compacted. Continuing with recent memory.',
-          };
-          setMessagesAndRef([...baseMessages, compactedNotice]);
-          await new Promise<void>(resolve => setTimeout(() => resolve(), 180));
-        }
-        setMessagesAndRef([...baseMessages, userMessage, assistantMessage]);
-        setStatus('Composing');
-        const conversationSnapshot = [...baseMessages, userMessage]
-          .filter(item => item.role !== 'notice' && item.text.trim().length > 0)
-          .slice(-18);
-        const emojiQuantityInstruction =
-          aiEmojiQuantity === 'none'
-            ? `Do not use any emojis in your response. Keep responses strictly text-based.`
-            : aiEmojiQuantity === 'low'
-            ? `Use at most 1 relevant emoji in the entire response, and only if highly appropriate. Use the signature emoji ${aiEmoji} if appropriate.`
-            : aiEmojiQuantity === 'high'
-            ? `Use emojis frequently and expressively throughout your response, including your signature emoji ${aiEmoji} in every paragraph.`
-            : `Use light, relevant emojis naturally and sparsely (e.g. 1-2 per reply) to keep it warm, including your signature emoji ${aiEmoji}.`;
-        const systemContent = isPerformanceMode
-          ? [
-              `You are ${aiName}, a highly concise offline AI assistant.`,
-              `Persona: ${aiPersonality}. Adopt this in 1-2 sentences.`,
-              aiEmojiQuantity !== 'none'
-                ? `Use signature emoji ${aiEmoji} at least once.`
-                : 'No emojis.',
-              `Identity rule: your assistant name is ${aiName}. Never claim the user is ${aiName}.`,
-              rememberedName ? `User is ${rememberedName}.` : '',
-              nextUserMemory ? `User memory: ${nextUserMemory}.` : '',
-              activeMemorySummary
-                ? `Context summary: ${activeMemorySummary}.`
-                : '',
-            ]
-              .filter(Boolean)
-              .join(' ')
-          : [
-              `You are ${aiName}, a highly capable offline AI assistant companion.`,
-              `Personality traits: ${aiPersonality}. Adopt this persona in all your replies.`,
-              `Actual local model: ${modelName}.`,
-              `You can answer questions, brainstorm, and write code in any programming language. Provide complete code implementations when requested.`,
-              `Answer the user's questions or requests directly and thoroughly. Do not introduce yourself unless the user asks who you are.`,
-              `Never use generic fallback lines like "How can I assist you today?" after the user asks a concrete question.`,
-              `If the user asks "what is X", define X clearly in 2-5 sentences.`,
-              `If the user gives a preference or fact, acknowledge it naturally and remember it.`,
-              emojiQuantityInstruction,
-              `Identity rule: your assistant name is ${aiName}. Do not claim the user's name is ${aiName}.`,
-              `Memory rule: if the user asks their name or identity, answer from Known user memory exactly. Never answer that the user's name is ${aiName}.`,
-              rememberedName ? `The user's name is ${rememberedName}.` : '',
-              `If asked who the user is, answer only from Known user memory. If unknown, say you do not know yet.`,
-              `Be helpful, grounded, and natural. Do not invent names or facts.`,
-              nextUserMemory
-                ? `Known user memory: ${nextUserMemory}`
-                : 'Known user memory: none yet.',
-              activeMemorySummary
-                ? `Compacted conversation memory:\n${activeMemorySummary}`
-                : '',
-            ]
-              .filter(Boolean)
-              .join('\n');
-        const llamaMessages: RNLlamaOAICompatibleMessage[] = [
+
+  const compactThreadMemory = useCallback(async (
+    context: LlamaContext,
+    completeMessages: ChatMessage[],
+    nextUserMemory: string,
+  ) => {
+    const compactableMessages = completeMessages.filter(item => item.role !== 'notice');
+    const activeCompactLimit = isPerformanceMode ? 10 : 40;
+    if (compactableMessages.length < activeCompactLimit) {
+      return {messages: compactableMessages, summary: memorySummary};
+    }
+
+    const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
+    const olderMessages = compactableMessages.slice(0, -activeKeepMessages);
+    const recentMessages = compactableMessages.slice(-activeKeepMessages);
+    setStatus('Context Compact Pending...');
+
+    try {
+      const result = await context.completion({
+        messages: [
           {
             role: 'system',
-            content: systemContent,
+            content:
+              'Compact this chat into durable memory for a local assistant. Keep facts, user preferences, names, goals, decisions, and open tasks. Do not invent anything. Use tight bullet notes.',
           },
-          ...conversationSnapshot.map(item => ({
-            role: item.role as 'user' | 'assistant',
-            content: item.text,
-          })),
-        ];
-        const flushStream = (force = false) => {
-          if (streamFlushTimer) {
-            clearTimeout(streamFlushTimer);
-            streamFlushTimer = null;
-          }
-          const nextVisibleText = visibleGeneratedText(streamedText);
-          if (!force && nextVisibleText === lastVisibleStreamText) {
-            return;
-          }
-          lastVisibleStreamText = nextVisibleText;
-          setResponsePhase('composing');
-          if (nextVisibleText.trim() && !didStartThinkingFade) {
-            didStartThinkingFade = true;
-            setIsThinkingFading(true);
-            clearThinkingFadeTimer();
-            thinkingFadeTimerRef.current = setTimeout(() => {
-              setThinkingTrace([]);
-              setIsThinkingFading(false);
-              thinkingFadeTimerRef.current = null;
-            }, 260);
-          }
-          updateMessagesAndRef(current =>
-            current.map(item =>
-              item.id === activeAssistantId
-                ? {
-                    ...item,
-                    text: `${activeResponsePrefix}${nextVisibleText}`,
-                  }
-                : item,
-            ),
-          );
-        };
-        const scheduleStreamFlush = () => {
-          if (streamFlushTimer) {
-            return;
-          }
-          streamFlushTimer = setTimeout(() => flushStream(), STREAM_FLUSH_MS);
-        };
-        const handleStreamToken = (data: CompletionTokenUpdate) => {
-          const nextStreamedText = getStreamTextFromUpdate(data, streamedText);
-          if (nextStreamedText === streamedText) {
-            return;
-          }
-          streamedText = nextStreamedText;
-          if (!didFeelReplyStartRef.current) {
-            didFeelReplyStartRef.current = true;
-            lightHaptic();
-          }
-          scheduleStreamFlush();
-        };
-        const activeMaxTokens = isPerformanceMode
-          ? Math.min(maxTokens, 1024)
-          : maxTokens;
-        const result = await context.completion(
           {
-            messages: llamaMessages,
-            n_predict: activeMaxTokens,
-            temperature: 0.65,
-            top_p: 0.9,
+            role: 'user',
+            content: [
+              memorySummary ? `Previous memory:\n${memorySummary}` : '',
+              nextUserMemory ? `Known user memory:\n${nextUserMemory}` : '',
+              `Conversation to compact:\n${serializeMessages(olderMessages, aiName)}`,
+            ].filter(Boolean).join('\n\n'),
+          },
+        ],
+        n_predict: 220,
+        temperature: 0.15,
+        top_p: 0.8,
+        top_k: 30,
+        penalty_repeat: 1.15,
+        stop: STOP_WORDS,
+        force_pure_content: true,
+      });
+
+      const compactedSummary = getCompletionText(result, '');
+      const nextSummary = compactedSummary || memorySummary;
+      setMemorySummary(nextSummary);
+      setCompactedCount(current => current + olderMessages.length);
+
+      const noticeMessage: ChatMessage = {
+        id: `${Date.now()}_compact_success`,
+        role: 'notice',
+        text: `Context Compacted (Success • ${olderMessages.length} msgs)`,
+      };
+
+      const nextMessagesWithNotice = [noticeMessage, ...recentMessages];
+      setMessagesAndRef(nextMessagesWithNotice);
+      setStatus('Context Compacted (Success)');
+      return {messages: nextMessagesWithNotice, summary: nextSummary};
+    } catch (error) {
+      console.warn('ChatScreen: compaction failed:', error);
+      setStatus('Memory kept raw');
+      return {messages: compactableMessages, summary: memorySummary};
+    }
+  }, [memorySummary, setMessagesAndRef, isPerformanceMode, keepMessages, aiName]);
+
+  const sendMessage = useCallback(async (overridePrompt?: string) => {
+    const prompt = (overridePrompt ?? input).trim();
+    if (!prompt || generationLockRef.current) {
+      return;
+    }
+    generationLockRef.current = true;
+    stopRequestedRef.current = false;
+    didFeelReplyStartRef.current = false;
+    setIsFreshEmptyThread(false);
+    lightHaptic();
+
+    pulseSend();
+
+    const now = Date.now();
+    const userMessage: ChatMessage = {
+      id: `${now}_user`,
+      role: 'user',
+      text: prompt,
+    };
+    const nextUserMemory = extractUserMemory(prompt, userMemory);
+    clearThinkingFadeTimer();
+    setIsThinkingFading(false);
+    setVisibleThinkingLineCount(1);
+    if (nextUserMemory !== userMemory) {
+      setUserMemory(nextUserMemory);
+    }
+    const rememberedName = extractNameFromMemory(nextUserMemory);
+    const assistantId = `${now}_assistant`;
+    userScrolledUpRef.current = false;
+    isChatScrollInteractingRef.current = false;
+    isChatAtBottomRef.current = true;
+    const assistantMessage: ChatMessage = {
+      id: assistantId,
+      role: 'assistant',
+      text: '',
+    };
+    let baseMessages = messagesRef.current.filter(item => item.role !== 'notice');
+    const isFirstMessage = baseMessages.length === 0;
+    setThinkingTrace(
+      buildThinkingTrace(
+        prompt,
+        Boolean(nextUserMemory || memorySummary),
+        isFirstMessage,
+      ),
+    );
+    let streamedText = '';
+    let lastVisibleStreamText = '';
+    let didStartThinkingFade = false;
+    let activeAssistantId = assistantId;
+    let activeResponsePrefix = '';
+    let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    try {
+      let activeMemorySummary = memorySummary;
+
+      setInput('');
+      setIsGenerating(true);
+      setResponsePhase('thinking');
+      setStatus('Thinking');
+      setMessagesAndRef([...messagesRef.current, userMessage, assistantMessage]);
+      scrollToEnd(true);
+      const context = await ensureModel();
+
+      // Allow native context to fully reset after a recent stop
+      if (justStoppedRef.current) {
+        justStoppedRef.current = false;
+        await new Promise<void>(resolve => setTimeout(resolve, 100));
+      }
+
+      const activeCompactLimit = isPerformanceMode ? 10 : 40;
+      if (baseMessages.length >= activeCompactLimit) {
+        const compactNotice: ChatMessage = {
+          id: `${now}_compact_notice`,
+          role: 'notice',
+          text: 'Compacting context...',
+        };
+        setMessagesAndRef([...messagesRef.current, compactNotice]);
+
+        const compacted = await compactThreadMemory(context, baseMessages, nextUserMemory);
+        const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
+        baseMessages = compacted?.messages ?? baseMessages.slice(-activeKeepMessages);
+        activeMemorySummary = compacted?.summary ?? activeMemorySummary;
+        const compactedNotice: ChatMessage = {
+          id: `${now}_compact_done`,
+          role: 'notice',
+          text: 'Context compacted. Continuing with recent memory.',
+        };
+        setMessagesAndRef([...baseMessages, compactedNotice]);
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 180));
+      }
+
+      setMessagesAndRef([...baseMessages, userMessage, assistantMessage]);
+      setStatus('Composing');
+
+      const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
+      const conversationSnapshot = [...baseMessages, userMessage]
+        .filter(item => item.role !== 'notice' && item.text.trim().length > 0)
+        .slice(-activeKeepMessages);
+      const emojiQuantityInstruction =
+        aiEmojiQuantity === 'none'
+          ? `EMOJI RULE: Do NOT use any emojis. Keep responses 100% text-based without emojis.`
+          : aiEmojiQuantity === 'low'
+          ? `EMOJI RULE: Use at most 1 emoji in the response, including signature emoji ${aiEmoji}.`
+          : aiEmojiQuantity === 'high'
+          ? `EMOJI RULE: HIGH EMOJI MODE. Use multiple emojis (${aiEmoji} and others) in every single sentence and response expressively! 🔥✨😊`
+          : `EMOJI RULE: Use 1-2 relevant emojis naturally, including signature emoji ${aiEmoji}.`;
+
+      const systemContent = isPerformanceMode
+        ? [
+            `You are ${aiName}, an offline AI assistant.`,
+            `Personality: ${aiPersonality}.`,
+            emojiQuantityInstruction,
+            `Identity rule: your assistant name is ${aiName}. Never claim the user is ${aiName}.`,
+            rememberedName ? `User is ${rememberedName}.` : '',
+            nextUserMemory ? `User memory: ${nextUserMemory}.` : '',
+            activeMemorySummary ? `Context summary: ${activeMemorySummary}.` : '',
+          ].filter(Boolean).join(' ')
+        : [
+            `You are ${aiName}, a highly capable offline AI assistant companion.`,
+            `Personality: ${aiPersonality}. Adopt this persona in all your replies.`,
+            `Actual local model: ${modelName}.`,
+            `You can answer questions, brainstorm, and write code in any programming language. Provide complete code implementations when requested.`,
+            `Answer the user's questions or requests directly and thoroughly. Do not introduce yourself unless the user asks who you are.`,
+            `Never use generic fallback lines like "How can I assist you today?" after the user asks a concrete question.`,
+            emojiQuantityInstruction,
+            `Identity rule: your assistant name is ${aiName}. Do not claim the user's name is ${aiName}.`,
+            `Memory rule: if the user asks their name or identity, answer from Known user memory exactly. Never answer that the user's name is ${aiName}.`,
+            rememberedName ? `The user's name is ${rememberedName}.` : '',
+            `If asked who the user is, answer only from Known user memory. If unknown, say you do not know yet.`,
+            `Be helpful, grounded, and natural. Do not invent names or facts.`,
+            nextUserMemory ? `Known user memory: ${nextUserMemory}` : 'Known user memory: none yet.',
+            activeMemorySummary ? `Compacted conversation memory:\n${activeMemorySummary}` : '',
+          ].filter(Boolean).join('\n');
+
+      const llamaMessages: RNLlamaOAICompatibleMessage[] = [
+        {
+          role: 'system',
+          content: systemContent,
+        },
+        ...conversationSnapshot.map(item => ({
+          role: item.role as 'user' | 'assistant',
+          content: sanitizeMessageForLlama(item.text),
+        })),
+      ];
+
+      const flushStream = (force = false) => {
+        if (streamFlushTimer) {
+          clearTimeout(streamFlushTimer);
+          streamFlushTimer = null;
+        }
+
+        const nextVisibleText = visibleGeneratedText(streamedText);
+        if (!force && nextVisibleText === lastVisibleStreamText) {
+          return;
+        }
+
+        lastVisibleStreamText = nextVisibleText;
+        setResponsePhase('composing');
+        if (nextVisibleText.trim() && !didStartThinkingFade) {
+          didStartThinkingFade = true;
+          setIsThinkingFading(true);
+          clearThinkingFadeTimer();
+          thinkingFadeTimerRef.current = setTimeout(() => {
+            setThinkingTrace([]);
+            setIsThinkingFading(false);
+            thinkingFadeTimerRef.current = null;
+          }, 260);
+        }
+        updateMessagesAndRef(current =>
+          current.map(item =>
+            item.id === activeAssistantId
+              ? {...item, text: `${activeResponsePrefix}${nextVisibleText}`}
+              : item,
+          ),
+        );
+      };
+
+      const scheduleStreamFlush = () => {
+        if (streamFlushTimer) {
+          return;
+        }
+        streamFlushTimer = setTimeout(() => flushStream(), STREAM_FLUSH_MS);
+      };
+
+      const handleStreamToken = (data: CompletionTokenUpdate) => {
+        const nextStreamedText = getStreamTextFromUpdate(data, streamedText);
+        if (nextStreamedText === streamedText) {
+          return;
+        }
+
+        streamedText = nextStreamedText;
+        if (!didFeelReplyStartRef.current) {
+          didFeelReplyStartRef.current = true;
+          lightHaptic();
+        } else {
+          const nowHaptic = Date.now();
+          if (nowHaptic - lastStreamHapticAtRef.current > 110) {
+            lastStreamHapticAtRef.current = nowHaptic;
+            streamHaptic();
+          }
+        }
+        scheduleStreamFlush();
+      };
+
+      const activeMaxTokens = isPerformanceMode ? Math.min(maxTokens, 1024) : maxTokens;
+      const result = await context.completion(
+        {
+          messages: llamaMessages,
+          n_predict: activeMaxTokens,
+          temperature: 0.65,
+          top_p: 0.9,
+          top_k: 40,
+          min_p: 0.05,
+          penalty_last_n: 64,
+          penalty_repeat: 1.03,
+          penalty_freq: 0,
+          dry_multiplier: 0,
+          stop: STOP_WORDS,
+          force_pure_content: true,
+        },
+        data => {
+          handleStreamToken(data);
+        },
+      );
+
+      flushStream(true);
+      lightHaptic();
+      let wasInterrupted = stopRequestedRef.current || Boolean(result.interrupted);
+      let isTruncated = Boolean(result.truncated) || Boolean(result.stopped_limit);
+      let finalText = getCompletionText(result, streamedText);
+      if (wasInterrupted && !finalText.trim()) {
+        finalText =
+          lastVisibleStreamText ||
+          visibleGeneratedText(streamedText) ||
+          messagesRef.current.find(item => item.id === activeAssistantId)?.text ||
+          '';
+      }
+      let finalAssistantMessages: ChatMessage[] = [
+        {
+          id: assistantId,
+          role: 'assistant',
+          text: finalText || 'I could not generate a response.',
+        },
+      ];
+
+      if (!isPerformanceMode && !wasInterrupted && finalText && !isCodeLikeResponse(finalText) && shouldRepairResponse(prompt, finalText, aiName)) {
+        setResponsePhase('thinking');
+        setStatus('Refining');
+        const firstResponseText = finalText || 'I could not generate a response.';
+        const repairAssistantId = `${assistantId}_repair`;
+        const responseOneMessage: ChatMessage = {
+          id: assistantId,
+          role: 'assistant',
+          text: `Response 1\n\n${firstResponseText}`,
+        };
+        const responseTwoPrefix = 'Response 2\n\n';
+        streamedText = '';
+        lastVisibleStreamText = '';
+        activeAssistantId = repairAssistantId;
+        activeResponsePrefix = responseTwoPrefix;
+        if (streamFlushTimer) {
+          clearTimeout(streamFlushTimer);
+          streamFlushTimer = null;
+        }
+        updateMessagesAndRef(current =>
+          [
+            ...current.map(item =>
+              item.id === assistantId ? responseOneMessage : item,
+            ),
+            {
+              id: repairAssistantId,
+              role: 'assistant' as const,
+              text: responseTwoPrefix,
+            },
+          ],
+        );
+
+        const repairResult = await context.completion(
+          {
+            messages: [
+              {
+                role: 'system',
+                content:
+                  [
+                    'Answer only the user question. No greeting. No self-introduction.',
+                    'If it is factual, define or explain it directly.',
+                    nextUserMemory ? `Known memory:\n${nextUserMemory}` : '',
+                    activeMemorySummary ? `Conversation memory:\n${activeMemorySummary}` : '',
+                  ].filter(Boolean).join('\n'),
+              },
+              {
+                role: 'user',
+                content: prompt,
+              },
+            ],
+            n_predict: 1024,
+            temperature: 0.45,
+            top_p: 0.85,
             top_k: 40,
             min_p: 0.05,
             penalty_last_n: 64,
@@ -2138,351 +2242,225 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
             handleStreamToken(data);
           },
         );
+
         flushStream(true);
-        let wasInterrupted =
-          stopRequestedRef.current || Boolean(result.interrupted);
-        let isTruncated =
-          Boolean(result.truncated) || Boolean(result.stopped_limit);
-        let finalText = getCompletionText(result, streamedText);
+        wasInterrupted = stopRequestedRef.current || Boolean(repairResult.interrupted);
+        isTruncated = Boolean(repairResult.truncated) || Boolean(repairResult.stopped_limit);
+        finalText = getCompletionText(repairResult, streamedText);
         if (wasInterrupted && !finalText.trim()) {
           finalText =
             lastVisibleStreamText ||
             visibleGeneratedText(streamedText) ||
-            messagesRef.current.find(item => item.id === activeAssistantId)
-              ?.text ||
+            messagesRef.current.find(item => item.id === activeAssistantId)?.text ||
             '';
         }
-        let finalAssistantMessages: ChatMessage[] = [
+        finalAssistantMessages = [
+          responseOneMessage,
           {
-            id: assistantId,
+            id: repairAssistantId,
             role: 'assistant',
-            text: finalText || 'I could not generate a response.',
+            text: `${responseTwoPrefix}${finalText || 'I could not generate a response.'}`,
           },
         ];
-        if (
-          !isPerformanceMode &&
-          !wasInterrupted &&
-          finalText &&
-          shouldRepairResponse(prompt, finalText, aiName)
-        ) {
-          setResponsePhase('thinking');
-          setStatus('Refining');
-          const firstResponseText =
-            finalText || 'I could not generate a response.';
-          const repairAssistantId = `${assistantId}_repair`;
-          const responseOneMessage: ChatMessage = {
-            id: assistantId,
-            role: 'assistant',
-            text: `Response 1\n\n${firstResponseText}`,
-          };
-          const responseTwoPrefix = 'Response 2\n\n';
-          streamedText = '';
-          lastVisibleStreamText = '';
-          activeAssistantId = repairAssistantId;
-          activeResponsePrefix = responseTwoPrefix;
-          if (streamFlushTimer) {
-            clearTimeout(streamFlushTimer);
-            streamFlushTimer = null;
-          }
-          updateMessagesAndRef(current => [
-            ...current.map(item =>
-              item.id === assistantId ? responseOneMessage : item,
-            ),
-            {
-              id: repairAssistantId,
-              role: 'assistant' as const,
-              text: responseTwoPrefix,
-            },
-          ]);
-          const repairResult = await context.completion(
-            {
-              messages: [
-                {
-                  role: 'system',
-                  content: [
-                    'Answer only the user question. No greeting. No self-introduction.',
-                    'If it is factual, define or explain it directly.',
-                    nextUserMemory ? `Known memory:\n${nextUserMemory}` : '',
-                    activeMemorySummary
-                      ? `Conversation memory:\n${activeMemorySummary}`
-                      : '',
-                  ]
-                    .filter(Boolean)
-                    .join('\n'),
-                },
-                {
-                  role: 'user',
-                  content: prompt,
-                },
-              ],
-              n_predict: 1024,
-              temperature: 0.45,
-              top_p: 0.85,
-              top_k: 40,
-              min_p: 0.05,
-              penalty_last_n: 64,
-              penalty_repeat: 1.03,
-              penalty_freq: 0,
-              dry_multiplier: 0,
-              stop: STOP_WORDS,
-              force_pure_content: true,
-            },
-            data => {
-              handleStreamToken(data);
-            },
-          );
-          flushStream(true);
-          wasInterrupted =
-            stopRequestedRef.current || Boolean(repairResult.interrupted);
-          isTruncated =
-            Boolean(repairResult.truncated) ||
-            Boolean(repairResult.stopped_limit);
-          finalText = getCompletionText(repairResult, streamedText);
-          if (wasInterrupted && !finalText.trim()) {
-            finalText =
-              lastVisibleStreamText ||
-              visibleGeneratedText(streamedText) ||
-              messagesRef.current.find(item => item.id === activeAssistantId)
-                ?.text ||
-              '';
-          }
-          finalAssistantMessages = [
-            responseOneMessage,
-            {
-              id: repairAssistantId,
-              role: 'assistant',
-              text: `${responseTwoPrefix}${
-                finalText || 'I could not generate a response.'
-              }`,
-            },
-          ];
+      }
+
+      if (!wasInterrupted && isLikelyCorruptResponse(finalText)) {
+        finalText = 'I got unstable output from the local model. Please tap send again and I will retry with a fresh pass.';
+      } else if (!wasInterrupted && shouldRepairResponse(prompt, finalText, aiName)) {
+        finalText = 'I got stuck on that reply. Ask it once more with a little more detail and I will answer directly.';
+      }
+
+      finalAssistantMessages = finalAssistantMessages.map((message, index, all) =>
+        index === all.length - 1
+          ? {
+              ...message,
+              text:
+                all.length > 1
+                  ? `Response ${index + 1}\n\n${finalText || 'I could not generate a response.'}`
+                  : finalText || 'I could not generate a response.',
+              interrupted: wasInterrupted,
+              isTruncated: isTruncated,
+            }
+          : message,
+      );
+      const completeMessages = [
+        ...baseMessages,
+        userMessage,
+        ...finalAssistantMessages,
+      ];
+      updateMessagesAndRef(current =>
+        current.map(item => {
+          const finalMessage = finalAssistantMessages.find(message => message.id === item.id);
+          return finalMessage ?? item;
+        }),
+      );
+      setStatus('Private offline');
+      setResponsePhase('idle');
+      if (!wasInterrupted) {
+        lightHaptic();
+      }
+      scrollToEnd(true);
+      if (!wasInterrupted) {
+        await compactThreadMemory(context, completeMessages, nextUserMemory);
+      }
+
+      if (!wasInterrupted && isCodeLikeResponse(finalText)) {
+        setIsCurrentThreadCodingLocked(true);
+        const lockNotice: ChatMessage = {
+          id: `${now}_coding_lock_notice`,
+          role: 'notice',
+          text: '⚡ Coding session completed! To maintain peak GPU speed & optimal memory compaction, please start a new thread for your next question.',
+        };
+        updateMessagesAndRef(current => [...current, lockNotice]);
+      }
+    } catch (error) {
+      if (stopRequestedRef.current) {
+        if (streamFlushTimer) {
+          clearTimeout(streamFlushTimer);
+          streamFlushTimer = null;
         }
-        if (!wasInterrupted && isLikelyCorruptResponse(finalText)) {
-          finalText =
-            'I got unstable output from the local model. Please tap send again and I will retry with a fresh pass.';
-        } else if (
-          !wasInterrupted &&
-          shouldRepairResponse(prompt, finalText, aiName)
-        ) {
-          finalText =
-            'I got stuck on that reply. Ask it once more with a little more detail and I will answer directly.';
-        }
-        finalAssistantMessages = finalAssistantMessages.map(
-          (message, index, all) =>
-            index === all.length - 1
-              ? {
-                  ...message,
-                  text:
-                    all.length > 1
-                      ? `Response ${index + 1}\n\n${
-                          finalText || 'I could not generate a response.'
-                        }`
-                      : finalText || 'I could not generate a response.',
-                  interrupted: wasInterrupted,
-                  isTruncated: isTruncated,
-                }
-              : message,
-        );
-        const completeMessages = [
-          ...baseMessages,
-          userMessage,
-          ...finalAssistantMessages,
-        ];
+        const interruptedVisibleText = visibleGeneratedText(streamedText);
+        const interruptedText = `${activeResponsePrefix}${interruptedVisibleText}`.trim();
         updateMessagesAndRef(current =>
-          current.map(item => {
-            const finalMessage = finalAssistantMessages.find(
-              message => message.id === item.id,
-            );
-            return finalMessage ?? item;
-          }),
+          current
+            .map(item => {
+              if (item.id === activeAssistantId) {
+                const preservedText = item.text.trim() || interruptedText;
+                return {
+                  ...item,
+                  text: preservedText || 'Generation stopped.',
+                  interrupted: true,
+                };
+              }
+
+              if (activeAssistantId !== assistantId && item.id === assistantId && item.text.trim()) {
+                return {...item, interrupted: true};
+              }
+
+              return item;
+            })
+            .filter(item => (
+              item.role !== 'assistant' ||
+              item.id === activeAssistantId ||
+              item.text.trim().length > 0
+            )),
         );
         setStatus('Private offline');
         setResponsePhase('idle');
-        if (!wasInterrupted) {
-          lightHaptic();
-        }
-        if (!wasInterrupted) {
-          await compactThreadMemory(context, completeMessages, nextUserMemory);
-        }
-      } catch (error) {
-        if (stopRequestedRef.current) {
-          if (streamFlushTimer) {
-            clearTimeout(streamFlushTimer);
-            streamFlushTimer = null;
-          }
-          const interruptedVisibleText = visibleGeneratedText(streamedText);
-          const interruptedText =
-            `${activeResponsePrefix}${interruptedVisibleText}`.trim();
-          updateMessagesAndRef(current =>
-            current
-              .map(item => {
-                if (item.id === activeAssistantId) {
-                  const preservedText = item.text.trim() || interruptedText;
-                  return {
-                    ...item,
-                    text: preservedText || 'Generation stopped.',
-                    interrupted: true,
-                  };
-                }
-                if (
-                  activeAssistantId !== assistantId &&
-                  item.id === assistantId &&
-                  item.text.trim()
-                ) {
-                  return {
-                    ...item,
-                    interrupted: true,
-                  };
-                }
-                return item;
-              })
-              .filter(
-                item =>
-                  item.role !== 'assistant' ||
-                  item.id === activeAssistantId ||
-                  item.text.trim().length > 0,
-              ),
-          );
-          setStatus('Private offline');
-          setResponsePhase('idle');
-          return;
-        }
-        const message =
-          error instanceof Error ? error.message : 'Model failed to respond.';
-        updateMessagesAndRef(current =>
-          current.map(item =>
-            item.id === assistantId
-              ? {
-                  ...item,
-                  text: `Local model error: ${message}`,
-                }
-              : item,
-          ),
-        );
-        setStatus('Model unavailable');
-        setResponsePhase('idle');
-      } finally {
-        generationLockRef.current = false;
-        stopRequestedRef.current = false;
-        setIsGenerating(false);
-        setIsModelLoading(false);
-        setResponsePhase('idle');
-        clearThinkingFadeTimer();
-        setThinkingTrace([]);
-        setVisibleThinkingLineCount(1);
-        setIsThinkingFading(false);
-        updateMessagesAndRef(current =>
-          current.map(item =>
-            item.role === 'assistant' && !item.text.trim()
-              ? {
-                  ...item,
-                  text: 'Generation stopped.',
-                  interrupted: true,
-                }
-              : item,
-          ),
-        );
+        return;
       }
-    },
-    [
-      clearThinkingFadeTimer,
-      compactThreadMemory,
-      ensureModel,
-      input,
-      memorySummary,
-      modelName,
-      pulseSend,
-      scrollToEnd,
-      setMessagesAndRef,
-      updateMessagesAndRef,
-      userMemory,
-      isPerformanceMode,
-      maxTokens,
-      keepMessages,
-      aiName,
-      aiPersonality,
-      aiEmoji,
-      aiEmojiQuantity,
-    ],
-  );
+
+      const message = error instanceof Error ? error.message : 'Model failed to respond.';
+      updateMessagesAndRef(current =>
+        current.map(item =>
+          item.id === assistantId
+            ? {...item, text: `Local model error: ${message}`}
+            : item,
+        ),
+      );
+      setStatus('Model unavailable');
+      setResponsePhase('idle');
+    } finally {
+      generationLockRef.current = false;
+      stopRequestedRef.current = false;
+      setIsGenerating(false);
+      setIsModelLoading(false);
+      setResponsePhase('idle');
+      clearThinkingFadeTimer();
+      setThinkingTrace([]);
+      setVisibleThinkingLineCount(1);
+      setIsThinkingFading(false);
+      // Safety net: ensure no assistant message was left blank
+      updateMessagesAndRef(current =>
+        current.map(item =>
+          item.role === 'assistant' && !item.text.trim()
+            ? {...item, text: 'Generation stopped.', interrupted: true}
+            : item,
+        ),
+      );
+    }
+  }, [
+    clearThinkingFadeTimer,
+    compactThreadMemory,
+    ensureModel,
+    input,
+    memorySummary,
+    modelName,
+    pulseSend,
+    scrollToEnd,
+    setMessagesAndRef,
+    updateMessagesAndRef,
+    userMemory,
+    isPerformanceMode,
+    maxTokens,
+    keepMessages,
+    aiName,
+    aiPersonality,
+    aiEmoji,
+    aiEmojiQuantity,
+  ]);
+
   const sendFirstHi = useCallback(() => {
     setInput('hi');
     requestAnimationFrame(() => sendMessage('hi'));
   }, [sendMessage]);
+
   const newChat = useCallback(async () => {
     if (threadsRef.current.length >= MAX_THREADS && messages.length > 0) {
       setIsMenuOpen(false);
       setShowThreadLimitAlert(true);
       return;
     }
-    if (isGenerating) {
-      await contextRef.current?.stopCompletion();
-    }
-    generationLockRef.current = false;
-    stopRequestedRef.current = false;
-    await contextRef.current?.clearCache();
-    const freshId = createThreadId();
-    setActiveThreadId(freshId);
+    clearRestoreScrollTimers();
+    pendingRestoreScrollRef.current = false;
+    didInitialScrollRef.current = true;
+    userScrolledUpRef.current = false;
+    const nextId = createThreadId();
+    setActiveThreadId(nextId);
     setMessagesAndRef([]);
     setMemorySummary('');
     setUserMemory('');
     setCompactedCount(0);
-    setInput('');
-    setStatus('Private offline');
-    setIsGenerating(false);
-    setResponsePhase('idle');
-    clearThinkingFadeTimer();
-    setThinkingTrace([]);
-    setVisibleThinkingLineCount(1);
-    setIsThinkingFading(false);
-    setIsMenuOpen(false);
+    setIsCurrentThreadCodingLocked(false);
     setIsFreshEmptyThread(true);
-    pendingRestoreScrollRef.current = false;
-    didInitialScrollRef.current = true;
+    setInput('');
+    setIsMenuOpen(false);
+    setStatus('Private offline');
+    lightHaptic();
+  }, [clearRestoreScrollTimers, setMessagesAndRef, messages.length]);
+
+  const loadThread = useCallback((thread: StoredThread) => {
     clearRestoreScrollTimers();
-    await AsyncStorage.setItem(ACTIVE_THREAD_KEY, freshId);
-  }, [
-    clearRestoreScrollTimers,
-    clearThinkingFadeTimer,
-    isGenerating,
-    messages.length,
-    setMessagesAndRef,
-  ]);
-  const loadThread = useCallback(
-    (thread: StoredThread) => {
-      clearRestoreScrollTimers();
-      pendingRestoreScrollRef.current = thread.messages.length > 0;
-      didInitialScrollRef.current = false;
-      setActiveThreadId(thread.id);
-      setMessagesAndRef(thread.messages);
-      setMemorySummary(thread.summary ?? '');
-      setUserMemory(thread.userMemory ?? '');
-      setCompactedCount(thread.compactedCount ?? 0);
-      clearThinkingFadeTimer();
-      setThinkingTrace([]);
-      setVisibleThinkingLineCount(1);
-      setIsThinkingFading(false);
-      setIsFreshEmptyThread(false);
-      setIsMenuOpen(false);
-      AsyncStorage.setItem(ACTIVE_THREAD_KEY, thread.id);
-    },
-    [clearRestoreScrollTimers, clearThinkingFadeTimer, setMessagesAndRef],
-  );
+    pendingRestoreScrollRef.current = Boolean(thread.messages.length);
+    didInitialScrollRef.current = false;
+    userScrolledUpRef.current = false;
+    setActiveThreadId(thread.id);
+    setMessagesAndRef(thread.messages);
+    setMemorySummary(thread.summary ?? '');
+    setUserMemory(thread.userMemory ?? '');
+    setCompactedCount(thread.compactedCount ?? 0);
+    setIsCurrentThreadCodingLocked(Boolean(thread.isCodingLocked));
+    setIsFreshEmptyThread(false);
+    setIsMenuOpen(false);
+    AsyncStorage.setItem(ACTIVE_THREAD_KEY, thread.id);
+  }, [clearRestoreScrollTimers, setMessagesAndRef]);
+
   const confirmDeleteThread = useCallback(async () => {
     if (!pendingDeleteThread) {
       return;
     }
+
     const remainingThreads = threadsRef.current.filter(
       thread => thread.id !== pendingDeleteThread.id,
     );
+
     threadsRef.current = remainingThreads;
     setThreads(remainingThreads);
     setPendingDeleteThread(null);
+
     let nextActiveId = activeThreadId;
     if (pendingDeleteThread.id === activeThreadId) {
-      const nextThread = [...remainingThreads].sort(
-        (a, b) => b.updatedAt - a.updatedAt,
-      )[0];
+      const nextThread = [...remainingThreads].sort((a, b) => b.updatedAt - a.updatedAt)[0];
       if (nextThread) {
         nextActiveId = nextThread.id;
         clearRestoreScrollTimers();
@@ -2506,10 +2484,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         setIsFreshEmptyThread(false);
       }
     }
+
     clearThinkingFadeTimer();
     setThinkingTrace([]);
     setVisibleThinkingLineCount(1);
     setIsThinkingFading(false);
+
     await AsyncStorage.multiSet([
       [CHAT_THREADS_KEY, JSON.stringify(remainingThreads)],
       [ACTIVE_THREAD_KEY, nextActiveId],
@@ -2521,10 +2501,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     pendingDeleteThread,
     setMessagesAndRef,
   ]);
+
   const stopGeneration = useCallback(async () => {
     if (stopRequestedRef.current) {
       return;
     }
+
     stopRequestedRef.current = true;
     justStoppedRef.current = true;
     try {
@@ -2542,43 +2524,53 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     setIsThinkingFading(false);
     setStatus('Private offline');
   }, [clearThinkingFadeTimer]);
+
   const handleChatBack = useCallback(() => {
     if (pendingDeleteThread) {
       setPendingDeleteThread(null);
       return true;
     }
+
     if (showModelSwitchAlert) {
       setShowModelSwitchAlert(false);
       return true;
     }
+
     if (showThreadLimitAlert) {
       setShowThreadLimitAlert(false);
       return true;
     }
+
     if (showLocalAccessAlert) {
       setShowLocalAccessAlert(false);
       return true;
     }
+
     if (showLogoutConfirmAlert) {
       setShowLogoutConfirmAlert(false);
       return true;
     }
+
     if (isContextOpen) {
       closeContextPanel();
       return true;
     }
+
     if (isInfoOpen) {
       closeInfoPanel();
       return true;
     }
+
     if (isMenuOpen) {
       setIsMenuOpen(false);
       return true;
     }
+
     if (inputRef.current?.isFocused()) {
       Keyboard.dismiss();
       return true;
     }
+
     onBack();
     return true;
   }, [
@@ -2594,13 +2586,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     showModelSwitchAlert,
     showThreadLimitAlert,
   ]);
+
   useEffect(() => {
-    const subscription = BackHandler.addEventListener(
-      'hardwareBackPress',
-      handleChatBack,
-    );
+    const subscription = BackHandler.addEventListener('hardwareBackPress', handleChatBack);
     return () => subscription.remove();
   }, [handleChatBack]);
+
   const liveAssistantId = useMemo(() => {
     if (!isGenerating) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -2611,15 +2602,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     return null;
   }, [isGenerating, messages]);
   const visibleThinkingLines = useMemo(
-    () =>
-      thinkingTrace.slice(
-        0,
-        Math.min(visibleThinkingLineCount, thinkingTrace.length),
-      ),
+    () => thinkingTrace.slice(0, Math.min(visibleThinkingLineCount, thinkingTrace.length)),
     [thinkingTrace, visibleThinkingLineCount],
   );
+
   const renderMessage = useCallback(
-    ({ item }: { item: ChatMessage }) => (
+    ({item}: {item: ChatMessage}) => (
       <MessageBubble
         item={item}
         isLive={item.id === liveAssistantId}
@@ -2630,65 +2618,56 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     ),
     [isThinkingFading, liveAssistantId, visibleThinkingLines],
   );
+
   const shouldShowEmptyOnboarding =
-    hasHydrated &&
-    messages.length === 0 &&
-    (threads.length === 0 || isFreshEmptyThread);
+    hasHydrated && messages.length === 0 && (threads.length === 0 || isFreshEmptyThread);
   const shouldShowChatSkeleton =
     !hasHydrated || (messages.length === 0 && !shouldShowEmptyOnboarding);
-  const androidBottomInsetFallback =
-    Platform.OS === 'android'
-      ? (() => {
-          const screenHeight = Dimensions.get('screen').height;
-          const windowHeight = Dimensions.get('window').height;
-          const statusBarHeight = StatusBar.currentHeight ?? 0;
-          const systemInsetGuess = Math.max(
-            0,
-            Math.round(screenHeight - windowHeight),
-          );
-          const navInsetGuess = Math.max(0, systemInsetGuess - statusBarHeight);
-          return Math.min(navInsetGuess, 48);
-        })()
-      : 0;
-  const composerBottomInset =
-    Platform.OS === 'android'
-      ? Math.max(insets.bottom, androidBottomInsetFallback)
-      : insets.bottom;
-  const useCompactComposerBottomPadding =
-    Platform.OS === 'android' && isAndroidKeyboardVisible;
-  const composerBottomPadding = useCompactComposerBottomPadding
-    ? Math.max(10, composerBottomInset + 4)
-    : Math.max(composerBottomInset + 10, 22);
+  const composerBottomInset = Math.max(insets.bottom, 12);
+  const composerBottomPadding = Platform.OS === 'android'
+    ? Math.max(insets.bottom, 10)
+    : insets.bottom;
+
   const switchBg = performanceToggleAnim.interpolate({
     inputRange: [0, 1],
     outputRange: ['#3A3A3C', '#B7FF25'],
   });
+
   const thumbTranslate = performanceToggleAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 20],
   });
+
   const lockedSettingsOpacity = performanceToggleAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 0.45],
   });
+
+
+
+  const infoBackgroundTranslateX = infoBackgroundSlide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -Math.min(windowWidth * 0.22, 88)],
+    extrapolate: 'clamp',
+  });
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <Animated.View
         style={[
-          styles.header,
-          {
-            paddingTop: insets.top + 12,
-          },
+          styles.mainSurface,
+          {transform: [{translateX: infoBackgroundTranslateX}]},
         ]}
-      >
+        collapsable={false}
+        renderToHardwareTextureAndroid={Platform.OS === 'android' && isInfoTransitionActive}
+        shouldRasterizeIOS={Platform.OS === 'ios' && isInfoTransitionActive}>
+      <View style={[styles.header, {paddingTop: insets.top + 4}]}>
         <TouchableOpacity
           style={styles.iconButton}
           onPressIn={dismissComposerKeyboard}
-          onPress={openSideMenu}
-        >
+          onPress={openSideMenu}>
           <View style={styles.menuGlyph}>
             <View style={[styles.menuGlyphLine, styles.menuGlyphLineTop]} />
             <View style={[styles.menuGlyphLine, styles.menuGlyphLineMid]} />
@@ -2702,24 +2681,26 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           onPress={() => {
             dismissComposerKeyboard();
             setShowModelSwitchAlert(true);
-          }}
-        >
-          <View style={styles.rivoMark}>
-            <Image
-              source={logoSource}
-              style={styles.rivoLogo}
-              resizeMode="contain"
-            />
+          }}>
+          <View style={styles.modelMark}>
+            {activeCatalogModel?.logo ? (
+              <Image
+                source={{uri: activeCatalogModel.logo}}
+                style={styles.modelLogoImage}
+                resizeMode="cover"
+              />
+            ) : (
+              <Cpu color="#34C759" size={16} strokeWidth={2.2} />
+            )}
           </View>
           <View style={styles.modelCopy}>
             <Text style={styles.headerTitle} numberOfLines={1}>
               Rivo
             </Text>
             <Text style={styles.modelSubline} numberOfLines={1}>
-              {modelName}
+              {activeCatalogModel?.name || modelName}
             </Text>
           </View>
-          <ChevronDown color="#A1A1AA" size={18} strokeWidth={2.4} />
         </TouchableOpacity>
         <View style={styles.headerSpacer} />
         {isModelLoading && <ActivityIndicator color="#FFFFFF" size="small" />}
@@ -2727,46 +2708,39 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           style={styles.contextButton}
           activeOpacity={0.82}
           onPressIn={dismissComposerKeyboard}
-          onPress={openContextPanel}
-        >
-          <Image
-            source={contextSource}
-            style={styles.contextIcon}
-            resizeMode="contain"
-          />
+          onPress={openContextPanel}>
+          <Image source={contextSource} style={styles.contextIcon} resizeMode="contain" />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.questionButton}
           activeOpacity={0.82}
           onPressIn={dismissComposerKeyboard}
-          onPress={openInfoPanel}
-        >
-          <Image
-            source={questionMarkSource}
-            style={styles.questionIcon}
-            resizeMode="contain"
-          />
+          onPress={openInfoPanel}>
+          <Image source={questionMarkSource} style={styles.questionIcon} resizeMode="contain" />
         </TouchableOpacity>
       </View>
 
       <FlatList
         ref={listRef}
+        style={styles.chatList}
         data={messages}
         keyExtractor={item => item.id}
         renderItem={renderMessage}
         onContentSizeChange={handleChatContentSizeChange}
         onLayout={handleListLayoutSettled}
         onScrollBeginDrag={() => {
-          if (isGenerating) {
-            isChatScrollInteractingRef.current = true;
-            userScrolledUpRef.current = true;
+          userScrolledUpRef.current = true;
+          isChatScrollInteractingRef.current = true;
+          if (scrollFrameRef.current !== null) {
+            cancelAnimationFrame(scrollFrameRef.current);
+            scrollFrameRef.current = null;
           }
         }}
         onScrollEndDrag={handleChatScrollInteractionEnd}
         onMomentumScrollEnd={handleChatScrollInteractionEnd}
         onScroll={e => {
-          const { layoutMeasurement, contentOffset, contentSize } =
-            e.nativeEvent;
+          const {layoutMeasurement, contentOffset, contentSize} = e.nativeEvent;
+          isContentOverflowingRef.current = contentSize.height > layoutMeasurement.height + 20;
           const isAtBottom =
             layoutMeasurement.height + contentOffset.y >=
             contentSize.height - AUTO_SCROLL_RESUME_THRESHOLD;
@@ -2776,11 +2750,13 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           }
         }}
         scrollEventThrottle={16}
-        removeClippedSubviews={false}
-        initialNumToRender={6}
-        maxToRenderPerBatch={4}
-        updateCellsBatchingPeriod={80}
-        windowSize={5}
+        // Keeping every old row mounted makes large conversations progressively
+        // harder for iOS to scroll. Let FlatList recycle rows outside its window.
+        removeClippedSubviews
+        initialNumToRender={16}
+        maxToRenderPerBatch={16}
+        updateCellsBatchingPeriod={50}
+        windowSize={21}
         contentContainerStyle={[
           styles.chatContent,
           shouldShowChatSkeleton
@@ -2793,36 +2769,26 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           ) : (
             <View style={styles.emptyState}>
               <View style={styles.emptyLogoMark}>
-                <Image
-                  source={logoSource}
-                  style={styles.emptyLogo}
-                  resizeMode="contain"
-                />
+                <Image source={logoSource} style={styles.emptyLogo} resizeMode="contain" />
               </View>
               <View style={styles.promptStack}>
                 <Text style={styles.emptyTitle}>What should we solve?</Text>
-                <Text style={styles.emptySubtitle}>
-                  Local model, local memory, no cloud handoff.
-                </Text>
+                <Text style={styles.emptySubtitle}>Local model, local memory, no cloud handoff.</Text>
               </View>
               <View style={styles.emptyAlertPanel}>
                 <Text style={styles.emptyAlertText}>
-                  This runs on your{' '}
-                  <Text style={styles.emptyAlertBuzz}>GPU</Text> and{' '}
+                  This runs on your <Text style={styles.emptyAlertBuzz}>GPU</Text> and{' '}
                   <Text style={styles.emptyAlertBuzz}>RAM</Text>. If any{' '}
-                  <Text style={styles.emptyAlertBuzz}>lag</Text> comes, do not
-                  worry.
+                  <Text style={styles.emptyAlertBuzz}>lag</Text> comes, do not worry.
                 </Text>
                 <Text style={styles.emptyAlertMeta}>
-                  The first message may take longer, so please wait. Afterwards,
-                  it will reply fast according to your device.
+                  The first message may take longer, so please wait. Afterwards, it will reply fast according to your device.
                 </Text>
               </View>
               <TouchableOpacity
                 activeOpacity={0.82}
                 style={styles.firstHiButton}
-                onPress={sendFirstHi}
-              >
+                onPress={sendFirstHi}>
                 <Text style={styles.firstHiButtonText}>Send your first hi</Text>
                 <ArrowUpRight color="#FFFFFF" size={19} strokeWidth={2.5} />
               </TouchableOpacity>
@@ -2838,74 +2804,72 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
         style={[
           styles.composerHost,
           {
-            marginBottom: androidKeyboardLift,
+            marginBottom: Platform.OS === 'android' && keyboardHeight > 0
+              ? Math.max(0, keyboardHeight - insets.bottom)
+              : 0,
             paddingBottom: composerBottomPadding,
           },
-        ]}
-      >
-        <View style={styles.composer}>
-          <TextInput
-            ref={inputRef}
-            value={input}
-            onChangeText={setInput}
-            placeholder="Ask Rivo offline"
-            placeholderTextColor="#B5B5B8"
-            style={styles.input}
-            editable={!isMenuOpen && !isInfoOpen}
-            showSoftInputOnFocus={!isMenuOpen && !isInfoOpen}
-            multiline
-            maxLength={2500}
-            onFocus={() => scrollToEnd(true, true)}
-            blurOnSubmit={true}
-            onSubmitEditing={() => {
-              if (!isGenerating) {
-                sendMessage();
-              }
-            }}
-            enterKeyHint="send"
-          />
-          <Animated.View
-            style={{
-              transform: [
-                {
-                  scale: sendScale,
-                },
-              ],
-            }}
-          >
+        ]}>
+        {isCurrentThreadCodingLocked ? (
+          <View style={styles.lockedComposerContainer}>
             <TouchableOpacity
-              style={styles.sendButton}
-              onPress={isGenerating ? stopGeneration : () => sendMessage()}
               activeOpacity={0.84}
-            >
-              {isGenerating ? (
-                <Square color="#000000" size={13} fill="#000000" />
-              ) : (
-                <SendHorizontal color="#000000" size={18} strokeWidth={2.5} />
-              )}
+              style={styles.startNewThreadButton}
+              onPress={newChat}>
+              <Smartphone color="#000000" size={17} strokeWidth={2.3} />
+              <Text style={styles.startNewThreadButtonText}>Start New Thread</Text>
+              <ArrowUpRight color="#000000" size={18} strokeWidth={2.5} />
             </TouchableOpacity>
-          </Animated.View>
-        </View>
-        <Text style={styles.disclaimerText}>
-          Local models can make mistakes. Check twice.
-        </Text>
+            <Text style={styles.lockedDisclaimerText}>
+              Thread locked for code optimization & peak GPU speed.
+            </Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.composer}>
+              <TextInput
+                ref={inputRef}
+                value={input}
+                onChangeText={setInput}
+                placeholder="Ask Rivo offline"
+                placeholderTextColor="#B5B5B8"
+                style={styles.input}
+                editable={!isMenuOpen && !isInfoOpen}
+                showSoftInputOnFocus={!isMenuOpen && !isInfoOpen}
+                multiline
+                maxLength={2500}
+                onFocus={() => scrollToEnd(true, true)}
+                blurOnSubmit={true}
+                onSubmitEditing={() => {
+                  if (!isGenerating) {
+                    sendMessage();
+                  }
+                }}
+                enterKeyHint="send"
+              />
+              <Animated.View style={{transform: [{scale: sendScale}]}}>
+                <TouchableOpacity
+                  style={styles.sendButton}
+                  onPress={isGenerating ? stopGeneration : () => sendMessage()}
+                  activeOpacity={0.84}>
+                  {isGenerating ? (
+                    <Square color="#000000" size={13} fill="#000000" />
+                  ) : (
+                    <SendHorizontal color="#000000" size={18} strokeWidth={2.5} />
+                  )}
+                </TouchableOpacity>
+              </Animated.View>
+            </View>
+            <Text style={styles.disclaimerText}>Local models can make mistakes. Check twice.</Text>
+          </>
+        )}
       </View>
+      </Animated.View>
 
       <Animated.View
         pointerEvents={isMenuOpen ? 'auto' : 'none'}
-        style={[
-          styles.scrimContainer,
-          {
-            opacity: scrimOpacity,
-          },
-        ]}
-      >
-        <Pressable
-          style={{
-            flex: 1,
-          }}
-          onPress={() => setIsMenuOpen(false)}
-        >
+        style={[styles.scrimContainer, {opacity: scrimOpacity}]}>
+        <Pressable style={{flex: 1}} onPress={() => setIsMenuOpen(false)}>
           <View style={styles.scrim} />
         </Pressable>
       </Animated.View>
@@ -2915,122 +2879,87 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           {
             paddingTop: insets.top + 16,
             paddingBottom: Math.max(composerBottomInset + 14, 24),
-            transform: [
-              {
-                translateX: menuX,
-              },
-            ],
+            transform: [{translateX: menuX}],
           },
-        ]}
-      >
+        ]}>
         <View style={styles.menuTop}>
           <View style={styles.menuBrand}>
             <View style={styles.menuBrandIcon}>
-              <Image
-                source={logoSource}
-                style={styles.menuBrandLogo}
-                resizeMode="contain"
-              />
+              <Image source={logoSource} style={styles.menuBrandLogo} resizeMode="contain" />
             </View>
             <Text style={styles.menuBrandText}>
               Rivo <Text style={styles.menuBrandTextLight}>Agent</Text>
             </Text>
           </View>
-          <TouchableOpacity
-            style={styles.iconButton}
-            onPress={() => setIsMenuOpen(false)}
-          >
-            <Image
-              source={closeSource}
-              style={styles.closeIcon}
-              resizeMode="contain"
-            />
+          <TouchableOpacity style={styles.iconButton} onPress={() => setIsMenuOpen(false)}>
+            <Image source={closeSource} style={styles.closeIcon} resizeMode="contain" />
           </TouchableOpacity>
         </View>
 
         <View style={styles.menuItems}>
-          {MENU_ITEMS.map(({ label, isActive }) => (
+          {MENU_ITEMS.map(({label, isActive}) => (
             <TouchableOpacity
               key={label}
               activeOpacity={0.78}
               style={[styles.menuItem, isActive && styles.menuItemActive]}
-              onPress={label === 'Fresh thread' ? newChat : undefined}
-            >
+              onPress={label === 'Fresh thread' ? newChat : undefined}>
               <View style={styles.menuItemIcon}>
-                <Image
-                  source={newSource}
-                  style={styles.newIcon}
-                  resizeMode="contain"
-                />
+                <Image source={newSource} style={styles.newIcon} resizeMode="contain" />
               </View>
-              <Text
-                style={[styles.menuText, isActive && styles.menuTextActive]}
-              >
-                {label}
-              </Text>
+              <Text style={[styles.menuText, isActive && styles.menuTextActive]}>{label}</Text>
             </TouchableOpacity>
           ))}
         </View>
 
         <Text style={styles.recentsTitle}>Local history</Text>
-        <Text style={styles.recentsLimitText}>
-          You can only create 7 threads.
-        </Text>
+        <Text style={styles.recentsLimitText}>You can only create 7 threads.</Text>
         <View style={styles.recentsList}>
           {recentThreads.length === 0 ? (
-            <Text style={styles.emptyHistory}>
-              Your chats save here automatically.
-            </Text>
-          ) : (
-            recentThreads.map(thread => {
-              const isActiveThread = thread.id === activeThreadId;
-              return (
-                <View
-                  key={thread.id}
-                  style={[
-                    styles.recentItem,
-                    isActiveThread && styles.recentItemActive,
-                  ]}
-                >
-                  <View style={styles.recentRow}>
-                    <TouchableOpacity
-                      activeOpacity={0.78}
-                      style={styles.recentMain}
-                      onPress={() => loadThread(thread)}
-                    >
-                      <Text
-                        style={[
-                          styles.recentText,
-                          isActiveThread && styles.recentTextActive,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {thread.title}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      activeOpacity={0.78}
-                      style={styles.historyDots}
-                      onPress={() => setPendingDeleteThread(thread)}
-                    >
-                      <MoreHorizontal
-                        color={isActiveThread ? '#E4E4E7' : '#A1A1AA'}
-                        size={18}
-                        strokeWidth={2.4}
-                      />
-                    </TouchableOpacity>
-                  </View>
+            <Text style={styles.emptyHistory}>Your chats save here automatically.</Text>
+          ) : recentThreads.map(thread => {
+            const isActiveThread = thread.id === activeThreadId;
+
+            return (
+              <View
+                key={thread.id}
+                style={[
+                  styles.recentItem,
+                  isActiveThread && styles.recentItemActive,
+                ]}>
+                <View style={styles.recentRow}>
+                  <TouchableOpacity
+                    activeOpacity={0.78}
+                    style={styles.recentMain}
+                    onPress={() => loadThread(thread)}>
+                    <Text
+                      style={[
+                        styles.recentText,
+                        isActiveThread && styles.recentTextActive,
+                      ]}
+                      numberOfLines={1}>
+                      {thread.title}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    activeOpacity={0.78}
+                    style={styles.historyDots}
+                    onPress={() => setPendingDeleteThread(thread)}>
+                    <MoreHorizontal
+                      color={isActiveThread ? '#E4E4E7' : '#A1A1AA'}
+                      size={18}
+                      strokeWidth={2.4}
+                    />
+                  </TouchableOpacity>
                 </View>
-              );
-            })
-          )}
+              </View>
+            );
+          })}
         </View>
 
         <TouchableOpacity
           style={styles.profileRow}
           onPress={() => setShowLogoutConfirmAlert(true)}
-          activeOpacity={0.78}
-        >
+          activeOpacity={0.78}>
           <View style={styles.profileAvatar}>
             <Text style={styles.profileInitials}>G</Text>
           </View>
@@ -3043,91 +2972,57 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
 
       {isContextOpen && (
         <Animated.View
+          collapsable={false}
+          renderToHardwareTextureAndroid={Platform.OS === 'android' && isContextTransitionActive}
+          shouldRasterizeIOS={Platform.OS === 'ios' && isContextTransitionActive}
           style={[
             styles.contextPanel,
             {
               paddingTop: insets.top + 12,
               paddingBottom: Math.max(composerBottomInset + 16, 24),
-              transform: [
-                {
-                  translateX: contextX,
-                },
-              ],
+              transform: [{translateX: contextX}],
             },
-          ]}
-        >
+          ]}>
           <View style={styles.contextHeader}>
             <TouchableOpacity
               style={styles.contextBackButton}
               activeOpacity={0.82}
-              onPress={closeContextPanel}
-            >
-              <Image
-                source={backSource}
-                style={styles.contextBackIcon}
-                resizeMode="contain"
-              />
+              onPress={closeContextPanel}>
+              <Image source={backSource} style={styles.contextBackIcon} resizeMode="contain" />
             </TouchableOpacity>
             <View style={styles.contextHeaderCopy}>
               <Text style={styles.contextEyebrow}>SYSTEM CORE</Text>
               <Text style={styles.contextTitle}>Neural Panel</Text>
             </View>
           </View>
+          
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.contextScroll} bounces={true} showsVerticalScrollIndicator={false}>
 
-          <ScrollView
-            style={{
-              flex: 1,
-            }}
-            contentContainerStyle={styles.contextScroll}
-            bounces={true}
-            showsVerticalScrollIndicator={false}
-          >
+            {/* Device Card */}
             <View style={styles.contextSpecsCard}>
               <View style={styles.specsHeaderRow}>
-                <Smartphone color="#FFFFFF" size={17} strokeWidth={2.5} />
-                <Text style={styles.specsCardTitle}>Optimal Hardware</Text>
+                <Smartphone color="#8E8E93" size={14} strokeWidth={2.5} />
+                <Text style={styles.specsCardTitle}>Your Device</Text>
               </View>
-              <Text style={styles.specsDeviceModel}>
-                {deviceSpecs.modelName}
-              </Text>
+              <Text style={styles.specsDeviceModel}>{deviceSpecs.modelName}</Text>
               <View style={styles.specsBadgesRow}>
                 <View style={styles.specsBadge}>
-                  <Cpu
-                    color="#34C759"
-                    size={11}
-                    strokeWidth={2.5}
-                    style={{
-                      marginRight: 4,
-                    }}
-                  />
-                  <Text style={styles.specsBadgeText}>
-                    {deviceSpecs.ramLabel}
-                  </Text>
+                  <Cpu color="#34C759" size={11} strokeWidth={2.5} style={{marginRight: 4}} />
+                  <Text style={styles.specsBadgeText}>{deviceSpecs.ramLabel}</Text>
                 </View>
                 <View style={styles.specsBadge}>
-                  <HardDrive
-                    color="#34C759"
-                    size={11}
-                    strokeWidth={2.5}
-                    style={{
-                      marginRight: 4,
-                    }}
-                  />
+                  <HardDrive color="#34C759" size={11} strokeWidth={2.5} style={{marginRight: 4}} />
                   <Text style={styles.specsBadgeText}>Local Engine</Text>
                 </View>
               </View>
             </View>
 
+            {/* AI Character */}
             <View style={styles.contextSection}>
-              <Text style={styles.contextSectionTitle}>
-                AI Companion Character
-              </Text>
-              <Text style={styles.contextSectionDesc}>
-                Customize your offline AI companion's identity, personality
-                traits, and styling.
-              </Text>
+              <Text style={styles.contextSectionTitle}>AI Assistant</Text>
+              <Text style={styles.contextSectionDesc}>Personalise the name and vibe of your AI.</Text>
 
-              <Text style={styles.inputLabel}>AI NAME</Text>
+              <Text style={styles.inputLabel}>Name</Text>
               <TextInput
                 style={styles.textInput}
                 value={localAiName}
@@ -3136,7 +3031,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
                 placeholderTextColor="#636366"
               />
 
-              <Text style={styles.inputLabel}>AI PERSONALITY TRAITS</Text>
+              <Text style={styles.inputLabel}>Personality</Text>
               <TextInput
                 style={styles.textInput}
                 value={localAiPersonality}
@@ -3145,7 +3040,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
                 placeholderTextColor="#636366"
               />
 
-              <Text style={styles.inputLabel}>EMOJI QUANTITY</Text>
+              <Text style={styles.inputLabel}>Emoji usage</Text>
               <View style={styles.segmentedControlRow}>
                 {(['none', 'low', 'medium', 'high'] as const).map(qty => {
                   const isSelected = localAiEmojiQuantity === qty;
@@ -3153,21 +3048,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
                     <TouchableOpacity
                       key={qty}
                       activeOpacity={0.82}
-                      style={[
-                        styles.segmentMiniBtn,
-                        isSelected && styles.segmentMiniBtnActive,
-                      ]}
+                      style={[styles.segmentMiniBtn, isSelected && styles.segmentMiniBtnActive]}
                       onPress={() => {
                         setLocalAiEmojiQuantity(qty);
                         lightHaptic();
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.segmentMiniText,
-                          isSelected && styles.segmentMiniTextActive,
-                        ]}
-                      >
+                      }}>
+                      <Text style={[styles.segmentMiniText, isSelected && styles.segmentMiniTextActive]}>
                         {qty === 'medium' ? 'MED' : qty.toUpperCase()}
                       </Text>
                     </TouchableOpacity>
@@ -3176,14 +3062,12 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
               </View>
             </View>
 
+            {/* User Profile */}
             <View style={styles.contextSection}>
-              <Text style={styles.contextSectionTitle}>User Profile</Text>
-              <Text style={styles.contextSectionDesc}>
-                Manage facts your AI companion remembers about you across
-                sessions.
-              </Text>
+              <Text style={styles.contextSectionTitle}>About You</Text>
+              <Text style={styles.contextSectionDesc}>Help the AI remember who you are.</Text>
 
-              <Text style={styles.inputLabel}>YOUR NAME</Text>
+              <Text style={styles.inputLabel}>Your name</Text>
               <TextInput
                 style={styles.textInput}
                 value={localName}
@@ -3192,180 +3076,89 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
                 placeholderTextColor="#636366"
               />
 
-              <Text style={styles.inputLabel}>
-                LONG-TERM AI MEMORIES (ONE PER LINE)
-              </Text>
+              <Text style={styles.inputLabel}>Facts to remember (one per line)</Text>
               <TextInput
                 style={[styles.textInput, styles.multilineInput]}
                 value={localMemoryBullets}
                 onChangeText={setLocalMemoryBullets}
-                placeholder="Likes coffee&#10;Dislikes advertisements"
+                placeholder={'Likes coffee\nDislikes ads'}
                 placeholderTextColor="#636366"
                 multiline
                 numberOfLines={4}
               />
             </View>
 
+            {/* Performance */}
             <View style={styles.contextSection}>
-              <Text style={styles.contextSectionTitle}>
-                Performance Optimizer
-              </Text>
-              <Text style={styles.contextSectionDesc}>
-                Speed up inference and reduce RAM footprint.
-              </Text>
+              <Text style={styles.contextSectionTitle}>Speed & Memory</Text>
+              <Text style={styles.contextSectionDesc}>Tune how the AI uses your device memory.</Text>
 
               <TouchableOpacity
                 activeOpacity={0.85}
-                style={[
-                  styles.toggleRow,
-                  isPerformanceMode && styles.toggleRowActive,
-                ]}
+                style={[styles.toggleRow, isPerformanceMode && styles.toggleRowActive]}
                 onPress={() => {
                   setIsPerformanceMode(!isPerformanceMode);
                   lightHaptic();
-                }}
-              >
-                <View
-                  style={{
-                    flex: 1,
-                  }}
-                >
-                  <Text style={styles.toggleLabel}>Performance Mode</Text>
+                }}>
+                <View style={{flex: 1}}>
+                  <Text style={styles.toggleLabel}>Fast Mode</Text>
                   <Text style={styles.toggleDesc}>
-                    Compacts memory much faster (10 messages instead of 40) and
-                    retains only 3 active messages to make replies hyper-fast on
-                    low-end devices.
+                    Shorter memory, faster replies. Great for low-RAM devices.
                   </Text>
                 </View>
-                <Animated.View
-                  style={[
-                    styles.toggleSwitch,
-                    {
-                      backgroundColor: switchBg,
-                    },
-                  ]}
-                >
-                  <Animated.View
-                    style={[
-                      styles.toggleThumb,
-                      {
-                        transform: [
-                          {
-                            translateX: thumbTranslate,
-                          },
-                        ],
-                      },
-                      isPerformanceMode && {
-                        backgroundColor: '#000000',
-                      },
-                    ]}
-                  />
+                <Animated.View style={[styles.toggleSwitch, { backgroundColor: switchBg }]}>
+                  <Animated.View style={[
+                    styles.toggleThumb,
+                    { transform: [{ translateX: thumbTranslate }] },
+                    isPerformanceMode && { backgroundColor: '#000000' }
+                  ]} />
                 </Animated.View>
               </TouchableOpacity>
 
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  marginTop: 6,
-                  marginBottom: 8,
-                }}
-              >
-                <Text
-                  style={[
-                    styles.inputLabel,
-                    {
-                      marginVertical: 0,
-                    },
-                  ]}
-                >
-                  MAX GENERATION TOKENS
-                </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, marginBottom: 8 }}>
+                <Text style={[styles.inputLabel, { marginVertical: 0 }]}>Max reply length</Text>
                 {isPerformanceMode && (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 4,
-                    }}
-                  >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <Lock color="#B7FF25" size={10} strokeWidth={2.5} />
-                    <Text
-                      style={{
-                        color: '#B7FF25',
-                        fontSize: 9,
-                        fontFamily: 'SF-Pro-Rounded-Bold',
-                        letterSpacing: 0.5,
-                      }}
-                    >
-                      LOCKED BY PERFORMANCE
-                    </Text>
+                    <Text style={{ color: '#B7FF25', fontSize: 9, fontFamily: 'SF-Pro-Rounded-Bold', letterSpacing: 0.5 }}>LOCKED</Text>
                   </View>
                 )}
               </View>
               <Animated.View
-                style={{
-                  opacity: lockedSettingsOpacity,
-                }}
-                pointerEvents={isPerformanceMode ? 'none' : 'auto'}
-              >
+                style={{ opacity: lockedSettingsOpacity }}
+                pointerEvents={isPerformanceMode ? 'none' : 'auto'}>
                 <View style={styles.segmentedControl}>
                   {[256, 512, 1024, 2048].map(tokens => {
-                    const isSelected = isPerformanceMode
-                      ? tokens === 1024
-                      : maxTokens === tokens;
+                    const isSelected = isPerformanceMode ? tokens === 1024 : maxTokens === tokens;
                     const isRecommended =
-                      !isPerformanceMode &&
-                      ((deviceSpecs.ramGB >= 8 && tokens === 1024) ||
-                        (deviceSpecs.ramGB < 8 &&
-                          deviceSpecs.ramGB >= 4 &&
-                          tokens === 512) ||
-                        (deviceSpecs.ramGB < 4 && tokens === 256));
+                      !isPerformanceMode && (
+                        (deviceSpecs.ramGB >= 8 && tokens === 1024) ||
+                        (deviceSpecs.ramGB < 8 && deviceSpecs.ramGB >= 4 && tokens === 512) ||
+                        (deviceSpecs.ramGB < 4 && tokens === 256)
+                      );
                     return (
                       <TouchableOpacity
                         key={tokens}
                         activeOpacity={0.82}
-                        style={[
-                          styles.segmentBtn,
-                          isSelected && styles.segmentBtnActive,
-                        ]}
+                        style={[styles.segmentBtn, isSelected && styles.segmentBtnActive]}
                         onPress={() => {
                           setMaxTokens(tokens);
                           lightHaptic();
-                        }}
-                      >
-                        <Text
-                          style={[
-                            styles.segmentText,
-                            isSelected && styles.segmentTextActive,
-                          ]}
-                        >
+                        }}>
+                        <Text style={[styles.segmentText, isSelected && styles.segmentTextActive]}>
                           {tokens === 1024 && isPerformanceMode
-                            ? '1024 tokens (Performance Cap)'
+                            ? '1024 (locked)'
                             : tokens === 256
-                            ? '256 (Lite)'
+                            ? '256 — Lite'
                             : tokens === 512
-                            ? '512 (Std)'
+                            ? '512 — Standard'
                             : tokens === 1024
-                            ? '1024 (Long)'
-                            : '2048 (Max)'}
+                            ? '1024 — Long'
+                            : '2048 — Max'}
                         </Text>
                         {isRecommended && (
-                          <View
-                            style={[
-                              styles.recBadge,
-                              isSelected && styles.recBadgeActive,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.recBadgeText,
-                                isSelected && styles.recBadgeTextActive,
-                              ]}
-                            >
-                              RECOMMENDED
-                            </Text>
+                          <View style={[styles.recBadge, isSelected && styles.recBadgeActive]}>
+                            <Text style={[styles.recBadgeText, isSelected && styles.recBadgeTextActive]}>BEST FOR YOU</Text>
                           </View>
                         )}
                       </TouchableOpacity>
@@ -3374,109 +3167,50 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
                 </View>
               </Animated.View>
 
-              <View
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  marginTop: 14,
-                  marginBottom: 8,
-                }}
-              >
-                <Text
-                  style={[
-                    styles.inputLabel,
-                    {
-                      marginVertical: 0,
-                    },
-                  ]}
-                >
-                  ACTIVE CONTEXT HISTORY SIZE
-                </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 8 }}>
+                <Text style={[styles.inputLabel, { marginVertical: 0 }]}>Chat history to keep</Text>
                 {isPerformanceMode && (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 4,
-                    }}
-                  >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <Lock color="#B7FF25" size={10} strokeWidth={2.5} />
-                    <Text
-                      style={{
-                        color: '#B7FF25',
-                        fontSize: 9,
-                        fontFamily: 'SF-Pro-Rounded-Bold',
-                        letterSpacing: 0.5,
-                      }}
-                    >
-                      LOCKED BY PERFORMANCE
-                    </Text>
+                    <Text style={{ color: '#B7FF25', fontSize: 9, fontFamily: 'SF-Pro-Rounded-Bold', letterSpacing: 0.5 }}>LOCKED</Text>
                   </View>
                 )}
               </View>
               <Animated.View
-                style={{
-                  opacity: lockedSettingsOpacity,
-                }}
-                pointerEvents={isPerformanceMode ? 'none' : 'auto'}
-              >
+                style={{ opacity: lockedSettingsOpacity }}
+                pointerEvents={isPerformanceMode ? 'none' : 'auto'}>
                 <View style={styles.segmentedControl}>
                   {[4, 8, 16, 24].map(size => {
-                    const isSelected = isPerformanceMode
-                      ? size === 4
-                      : keepMessages === size;
+                    const isSelected = isPerformanceMode ? size === 4 : keepMessages === size;
                     const isRecommended =
-                      !isPerformanceMode &&
-                      ((deviceSpecs.ramGB >= 8 && size === 16) ||
-                        (deviceSpecs.ramGB < 8 &&
-                          deviceSpecs.ramGB >= 4 &&
-                          size === 8) ||
-                        (deviceSpecs.ramGB < 4 && size === 4));
+                      !isPerformanceMode && (
+                        (deviceSpecs.ramGB >= 8 && size === 16) ||
+                        (deviceSpecs.ramGB < 8 && deviceSpecs.ramGB >= 4 && size === 8) ||
+                        (deviceSpecs.ramGB < 4 && size === 4)
+                      );
                     return (
                       <TouchableOpacity
                         key={size}
                         activeOpacity={0.82}
-                        style={[
-                          styles.segmentBtn,
-                          isSelected && styles.segmentBtnActive,
-                        ]}
+                        style={[styles.segmentBtn, isSelected && styles.segmentBtnActive]}
                         onPress={() => {
                           setKeepMessages(size);
                           lightHaptic();
-                        }}
-                      >
-                        <Text
-                          style={[
-                            styles.segmentText,
-                            isSelected && styles.segmentTextActive,
-                          ]}
-                        >
+                        }}>
+                        <Text style={[styles.segmentText, isSelected && styles.segmentTextActive]}>
                           {size === 4 && isPerformanceMode
-                            ? '3 messages (Ultra Short Limit)'
+                            ? '3 messages (locked)'
                             : size === 4
-                            ? '4 messages (Ultra Fast)'
+                            ? '4 messages'
                             : size === 8
-                            ? '8 messages (Optimized)'
+                            ? '8 messages'
                             : size === 16
-                            ? '16 messages (Standard)'
-                            : '24 messages (Max)'}
+                            ? '16 messages'
+                            : '24 messages'}
                         </Text>
                         {isRecommended && (
-                          <View
-                            style={[
-                              styles.recBadge,
-                              isSelected && styles.recBadgeActive,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.recBadgeText,
-                                isSelected && styles.recBadgeTextActive,
-                              ]}
-                            >
-                              RECOMMENDED
-                            </Text>
+                          <View style={[styles.recBadge, isSelected && styles.recBadgeActive]}>
+                            <Text style={[styles.recBadgeText, isSelected && styles.recBadgeTextActive]}>BEST FOR YOU</Text>
                           </View>
                         )}
                       </TouchableOpacity>
@@ -3486,76 +3220,44 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
               </Animated.View>
             </View>
 
+            {/* Context Status */}
             <View style={styles.contextSection}>
-              <Text style={styles.contextSectionTitle}>
-                Cache & Context Size
-              </Text>
-              <Text style={styles.contextSectionDesc}>
-                Total active chat history in memory.
-              </Text>
+              <Text style={styles.contextSectionTitle}>Current Usage</Text>
+              <Text style={styles.contextSectionDesc}>How much memory the chat is using right now.</Text>
               <View style={styles.cacheStats}>
-                <Animated.View
-                  style={{
-                    transform: [
-                      {
-                        scale: contextPulseAnim,
-                      },
-                    ],
-                  }}
-                >
+                <Animated.View style={{ transform: [{ scale: contextPulseAnim }] }}>
                   <Text style={styles.cacheStatText}>
-                    Active context:{' '}
-                    <Text
-                      style={{
-                        color: '#FFFFFF',
-                      }}
-                    >
-                      {messages.length} / {isPerformanceMode ? 3 : keepMessages}{' '}
-                      messages (max limit)
-                    </Text>
+                    Messages in context: <Text style={{color: '#FFFFFF'}}>{messages.length} / {isPerformanceMode ? 3 : keepMessages}</Text>
                   </Text>
                 </Animated.View>
                 <Text style={styles.cacheStatText}>
-                  Compacted history:{' '}
-                  <Text
-                    style={{
-                      color: '#FFFFFF',
-                    }}
-                  >
-                    {compactedCount} messages
-                  </Text>
+                  Summarised history: <Text style={{color: '#FFFFFF'}}>{compactedCount} messages</Text>
                 </Text>
               </View>
             </View>
           </ScrollView>
+
         </Animated.View>
       )}
       {isInfoOpen && (
         <Animated.View
+          collapsable={false}
+          renderToHardwareTextureAndroid={Platform.OS === 'android' && isInfoTransitionActive}
+          shouldRasterizeIOS={Platform.OS === 'ios' && isInfoTransitionActive}
           style={[
             styles.infoPanel,
             {
               paddingTop: insets.top + 12,
               paddingBottom: Math.max(composerBottomInset + 16, 24),
-              transform: [
-                {
-                  translateX: infoX,
-                },
-              ],
+              transform: [{translateX: infoX}],
             },
-          ]}
-        >
+          ]}>
           <View style={styles.infoHeader}>
             <TouchableOpacity
               style={styles.infoBackButton}
               activeOpacity={0.82}
-              onPress={closeInfoPanel}
-            >
-              <Image
-                source={backSource}
-                style={styles.infoBackIcon}
-                resizeMode="contain"
-              />
+              onPress={closeInfoPanel}>
+              <Image source={backSource} style={styles.infoBackIcon} resizeMode="contain" />
             </TouchableOpacity>
             <View style={styles.infoHeaderCopy}>
               <Text style={styles.infoEyebrow}>ABOUT RIVO</Text>
@@ -3566,21 +3268,15 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
           <ScrollView
             style={styles.infoScroll}
             contentContainerStyle={styles.infoContent}
-            showsVerticalScrollIndicator={false}
-          >
+            showsVerticalScrollIndicator={false}>
             <View style={styles.infoHero}>
-              <Image
-                source={logoSource}
-                style={styles.infoLogo}
-                resizeMode="contain"
-              />
+              <Image source={logoSource} style={styles.infoLogo} resizeMode="contain" />
               <View style={styles.infoHeroCopy}>
                 <Text style={styles.infoHeroTitle}>Rivo Agent</Text>
                 <Text style={styles.infoHeroText}>
                   We are importing models from{' '}
-                  <Text style={styles.infoHighlight}>Hugging Face</Text> and all
-                  agent work is done by{' '}
-                  <Text style={styles.infoHighlight}>Rivo</Text>.
+                  <Text style={styles.infoHighlight}>Hugging Face</Text> and all agent work is
+                  done by <Text style={styles.infoHighlight}>Rivo</Text>.
                 </Text>
               </View>
             </View>
@@ -3597,31 +3293,19 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() => openInfoLink(DEVELOPER_GITHUB_URL)}
-              >
+                onPress={() => openInfoLink(DEVELOPER_GITHUB_URL)}>
                 <View style={styles.infoLineIconWrap}>
-                  <ArrowUpRight
-                    color={INFO_ACCENT_BLUE}
-                    size={15}
-                    strokeWidth={2.4}
-                  />
+                  <GithubIcon color={INFO_ACCENT_BLUE} size={15} />
                   <Text style={styles.infoLineLabel}>GitHub</Text>
                 </View>
-                <Text style={styles.infoLineValue}>
-                  github.com/sanketpadhyal
-                </Text>
+                <Text style={styles.infoLineValue}>github.com/sanketpadhyal</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() => openInfoLink('https://www.sanketpadhyal.in')}
-              >
+                onPress={() => openInfoLink('https://www.sanketpadhyal.in')}>
                 <View style={styles.infoLineIconWrap}>
-                  <ArrowUpRight
-                    color={INFO_ACCENT_BLUE}
-                    size={15}
-                    strokeWidth={2.4}
-                  />
+                  <Globe color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
                   <Text style={styles.infoLineLabel}>Website</Text>
                 </View>
                 <Text style={styles.infoLineValue}>www.sanketpadhyal.in</Text>
@@ -3629,25 +3313,17 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() => openInfoLink(PROJECT_REPO_URL)}
-              >
+                onPress={() => openInfoLink(PROJECT_REPO_URL)}>
                 <View style={styles.infoLineIconWrap}>
-                  <Folder
-                    color={INFO_ACCENT_BLUE}
-                    size={15}
-                    strokeWidth={2.4}
-                  />
+                  <Folder color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
                   <Text style={styles.infoLineLabel}>Project repo</Text>
                 </View>
-                <Text style={styles.infoLineValue}>
-                  sanketpadhyal/Rivo-Agent
-                </Text>
+                <Text style={styles.infoLineValue}>sanketpadhyal/Rivo-Agent</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.infoLine}
                 activeOpacity={0.76}
-                onPress={() => openInfoLink(`mailto:${SUPPORT_EMAIL}`)}
-              >
+                onPress={() => openInfoLink(`mailto:${SUPPORT_EMAIL}`)}>
                 <View style={styles.infoLineIconWrap}>
                   <Mail color={INFO_ACCENT_BLUE} size={15} strokeWidth={2.4} />
                   <Text style={styles.infoLineLabel}>Support</Text>
@@ -3659,45 +3335,35 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
             <View style={styles.infoSection}>
               <Text style={styles.infoSectionTitle}>Source Status</Text>
               <Text style={styles.infoBody}>
-                This project is not{' '}
+                This project is{' '}
                 <Text style={styles.infoHighlight}>open source</Text>. The{' '}
                 <Text style={styles.infoHighlight}>GitHub repository</Text> is{' '}
-                <Text style={styles.infoHighlight}>private</Text> and maintained
-                by the developer.
+                <Text style={styles.infoHighlight}>public</Text> and maintained by the developer.
               </Text>
             </View>
 
             <View style={styles.infoSection}>
-              <Text style={styles.infoSectionTitle}>
-                Hugging Face & Local Execution
-              </Text>
+              <Text style={styles.infoSectionTitle}>Hugging Face & Local Execution</Text>
               <Text style={styles.infoBody}>
-                <Text style={styles.infoHighlight}>Rivo</Text> imports
-                state-of-the-art{' '}
-                <Text style={styles.infoHighlight}>AI models</Text> directly
-                from <Text style={styles.infoHighlight}>Hugging Face</Text>{' '}
-                using the optimized{' '}
-                <Text style={styles.infoHighlight}>GGUF</Text> format. Once
-                imported, models are executed entirely{' '}
-                <Text style={styles.infoHighlight}>offline</Text> on your device
+                <Text style={styles.infoHighlight}>Rivo</Text> imports state-of-the-art{' '}
+                <Text style={styles.infoHighlight}>AI models</Text> directly from{' '}
+                <Text style={styles.infoHighlight}>Hugging Face</Text> using the optimized{' '}
+                <Text style={styles.infoHighlight}>GGUF</Text> format. Once imported, models are
+                executed entirely <Text style={styles.infoHighlight}>offline</Text> on your device
                 using our custom inference engine, ensuring maximum{' '}
                 <Text style={styles.infoHighlight}>privacy</Text> and{' '}
-                <Text style={styles.infoHighlight}>zero latency</Text>.{'\n\n'}
-                <Text style={styles.infoHighlight}>Hugging Face</Text> is a
-                trademark of Hugging Face, Inc. All imported models remain the
-                property of their original creators and are subject to their
-                respective copyright and licensing terms.
+                <Text style={styles.infoHighlight}>zero latency</Text>.
+                {'\n\n'}
+                <Text style={styles.infoHighlight}>Hugging Face</Text> is a trademark of Hugging
+                Face, Inc. All imported models remain the property of their original creators and
+                are subject to their respective copyright and licensing terms.
               </Text>
             </View>
 
             <View style={styles.infoSection}>
               <Text style={styles.infoSectionTitle}>Current Model Details</Text>
               <Text style={styles.infoBody}>
-                You are currently running{' '}
-                <Text style={styles.infoHighlight}>{modelName}</Text>. This
-                model executes locally on your device's neural engine, providing
-                fully offline, instantaneous responses without transmitting any
-                data over the internet.
+                You are currently running <Text style={styles.infoHighlight}>{modelName}</Text>. This model executes locally on your device's neural engine, providing fully offline, instantaneous responses without transmitting any data over the internet.
               </Text>
             </View>
           </ScrollView>
@@ -3740,9 +3406,7 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
       <ProfessionalAlert
         visible={Boolean(pendingDeleteThread)}
         title="Delete this chat?"
-        message={`"${
-          pendingDeleteThread?.title ?? 'This chat'
-        }" will be removed from local history. This cannot be undone.`}
+        message={`"${pendingDeleteThread?.title ?? 'This chat'}" will be removed from local history. This cannot be undone.`}
         cancelLabel="Cancel"
         confirmLabel="Delete"
         isDestructive
@@ -3753,13 +3417,18 @@ const ChatScreen: React.FC<Props> = ({ onBack }) => {
     </KeyboardAvoidingView>
   );
 };
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
   },
+  mainSurface: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
   header: {
-    minHeight: 78,
+    minHeight: 54,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
@@ -3785,10 +3454,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#FFFFFF',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
+    shadowOffset: {width: 0, height: 0},
     shadowOpacity: 0.06,
     shadowRadius: 10,
   },
@@ -3818,21 +3484,22 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     maxWidth: '74%',
   },
-  rivoMark: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#0B0B0B',
+  modelMark: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#141518',
     borderWidth: 1,
-    borderColor: '#202020',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
     overflow: 'hidden',
   },
-  rivoLogo: {
-    width: 24,
-    height: 22,
+  modelLogoImage: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
   },
   modelCopy: {
     maxWidth: 190,
@@ -3883,13 +3550,20 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     zIndex: 40,
-    backgroundColor: '#000000',
+    backgroundColor: '#060608',
+    shadowColor: '#000000',
+    shadowOffset: {width: -8, height: 0},
+    shadowOpacity: 0.7,
+    shadowRadius: 24,
+    elevation: 30,
   },
   infoHeader: {
     minHeight: 58,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
   },
   infoBackButton: {
     width: 36,
@@ -3901,87 +3575,100 @@ const styles = StyleSheet.create({
   infoBackIcon: {
     width: 28,
     height: 28,
-    tintColor: INFO_ACCENT_BLUE,
+    tintColor: '#FFFFFF',
   },
   infoHeaderCopy: {
     flex: 1,
   },
   infoEyebrow: {
-    color: '#8E8E93',
+    color: '#34C759',
     fontSize: 10,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    letterSpacing: 1.6,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
   },
   infoTitle: {
     color: '#FFFFFF',
-    fontSize: 20,
+    fontSize: 22,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    lineHeight: 24,
-    marginTop: 2,
+    lineHeight: 26,
+    marginTop: 1,
   },
   infoScroll: {
     flex: 1,
   },
   infoContent: {
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 18,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 32,
+    gap: 12,
   },
   infoHero: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#171719',
-    marginBottom: 14,
+    backgroundColor: '#111114',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+    padding: 16,
+    marginBottom: 2,
   },
   infoLogo: {
-    width: 46,
-    height: 46,
+    width: 52,
+    height: 52,
     marginRight: 14,
+    borderRadius: 14,
   },
   infoHeroCopy: {
     flex: 1,
   },
   infoHeroTitle: {
     color: '#FFFFFF',
-    fontSize: 24,
+    fontSize: 22,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    lineHeight: 28,
+    lineHeight: 26,
   },
   infoHeroText: {
-    color: '#A1A1AA',
-    fontSize: 14,
+    color: '#8E8E93',
+    fontSize: 13,
     fontFamily: 'SF-Pro-Rounded-Semibold',
-    lineHeight: 20,
-    marginTop: 5,
+    lineHeight: 19,
+    marginTop: 4,
   },
   infoSection: {
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#151517',
+    backgroundColor: '#111114',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
   infoSectionTitle: {
-    color: '#FFFFFF',
-    fontSize: 17,
+    color: '#8E8E93',
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    marginBottom: 12,
+    letterSpacing: 1.4,
+    textTransform: 'uppercase',
+    marginBottom: 10,
   },
   infoLine: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 14,
-    paddingVertical: 8,
+    gap: 10,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   infoLineIconWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 8,
+    flexShrink: 0,
   },
   infoLineLabel: {
-    color: '#7C7C84',
-    fontSize: 13,
+    color: '#8E8E93',
+    fontSize: 14,
     fontFamily: 'SF-Pro-Rounded-Semibold',
   },
   infoLineValue: {
@@ -3995,17 +3682,21 @@ const styles = StyleSheet.create({
   infoBody: {
     color: '#A1A1AA',
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 22,
     fontFamily: 'SF-Pro-Rounded-Semibold',
   },
   infoHighlight: {
     color: INFO_KEYWORD_GREEN,
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
+  chatList: {
+    flex: 1,
+    width: '100%',
+  },
   chatContent: {
     paddingHorizontal: 18,
     paddingTop: 8,
-    paddingBottom: 20,
+    paddingBottom: 24,
   },
   skeletonChatContent: {
     flexGrow: 1,
@@ -4063,6 +3754,7 @@ const styles = StyleSheet.create({
   emptyChatContent: {
     flexGrow: 1,
     justifyContent: 'flex-end',
+    paddingBottom: 12,
   },
   emptyState: {
     width: '100%',
@@ -4184,6 +3876,7 @@ const styles = StyleSheet.create({
   userBubble: {
     backgroundColor: '#0AA550',
     borderTopRightRadius: 10,
+    alignSelf: 'flex-end',
   },
   assistantBubble: {
     backgroundColor: 'transparent',
@@ -4207,21 +3900,21 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   codeBlock: {
-    minWidth: 270,
+    minWidth: 260,
     maxWidth: '100%',
-    backgroundColor: '#08090B',
+    backgroundColor: '#090A0E',
     borderWidth: 1,
-    borderColor: '#2D3037',
-    borderRadius: 16,
+    borderColor: '#242730',
+    borderRadius: 14,
     overflow: 'hidden',
-    marginTop: 4,
-    marginBottom: 10,
+    marginTop: 6,
+    marginBottom: 8,
   },
   codeBlockHeader: {
-    minHeight: 42,
-    backgroundColor: '#181A1F',
+    minHeight: 38,
+    backgroundColor: '#13151A',
     borderBottomWidth: 1,
-    borderBottomColor: '#2D3037',
+    borderBottomColor: '#242730',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -4234,47 +3927,101 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   codeLanguage: {
-    color: '#C6C8D0',
-    fontSize: 12,
+    color: '#34C759',
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Bold',
     textTransform: 'uppercase',
+    letterSpacing: 0.8,
   },
-  codeCopyButton: {
-    width: 34,
-    height: 30,
+  codeCopyButtonRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  codeCopyText: {
+    color: '#8E8E93',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
   },
   codeScroll: {
     maxWidth: '100%',
+    maxHeight: 360,
   },
   codeEditorSurface: {
-    paddingVertical: 12,
-    paddingRight: 18,
+    paddingVertical: 10,
+    paddingRight: 16,
   },
   codeLineRow: {
-    minHeight: 20,
+    minHeight: 18,
     flexDirection: 'row',
     alignItems: 'flex-start',
   },
   codeLineNumber: {
-    width: 42,
-    color: '#5F6570',
-    fontSize: 13,
+    width: 36,
+    color: '#4A4E58',
+    fontSize: 12,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 20,
-    paddingLeft: 12,
-    paddingRight: 10,
+    lineHeight: 18,
+    paddingLeft: 8,
+    paddingRight: 8,
     textAlign: 'right',
   },
   codeText: {
-    color: '#F6F7FB',
-    fontSize: 13,
+    color: '#F4F4F5',
+    fontSize: 12,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 20,
-    paddingLeft: 12,
+    lineHeight: 18,
+    paddingLeft: 10,
     borderLeftWidth: 1,
-    borderLeftColor: '#242832',
+    borderLeftColor: '#1E2128',
+  },
+  formattedTextContainer: {
+    width: '100%',
+  },
+  paragraphText: {
+    marginBottom: 4,
+  },
+  paragraphSpacer: {
+    height: 6,
+  },
+  markdownHeading: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  bulletRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 2,
+    paddingLeft: 2,
+  },
+  bulletDot: {
+    color: '#34C759',
+    fontSize: 14,
+    marginRight: 8,
+    lineHeight: 22,
+  },
+  bulletContent: {
+    flex: 1,
+    color: '#E4E4E7',
+    fontSize: 15,
+    fontFamily: 'SF-Pro-Rounded-Regular',
+    lineHeight: 22,
+  },
+  inlineCodePill: {
+    color: '#34C759',
+    fontSize: 12,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    backgroundColor: 'rgba(52, 199, 89, 0.12)',
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    overflow: 'hidden',
   },
   messageActions: {
     flexDirection: 'row',
@@ -4354,27 +4101,67 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   compactDivider: {
-    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    marginVertical: 14,
+    paddingHorizontal: 12,
   },
   compactDividerLine: {
     flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: '#222225',
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  compactDividerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#121316',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 199, 89, 0.3)',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    marginHorizontal: 10,
   },
   compactDividerText: {
-    color: '#8E8E93',
+    color: '#34C759',
     fontSize: 12,
-    fontFamily: 'SF-Pro-Rounded-Bold',
-    marginHorizontal: 12,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    letterSpacing: 0.2,
   },
   composerHost: {
-    paddingHorizontal: 18,
-    paddingTop: 4,
+    paddingHorizontal: 16,
+    paddingTop: 2,
     backgroundColor: '#000000',
+  },
+  lockedComposerContainer: {
+    width: '100%',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  startNewThreadButton: {
+    width: '100%',
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    elevation: 4,
+  },
+  startNewThreadButtonText: {
+    color: '#000000',
+    fontSize: 16,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  lockedDisclaimerText: {
+    color: '#8E8E93',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    textAlign: 'center',
+    marginTop: 8,
   },
   composer: {
     minHeight: 48,
@@ -4412,10 +4199,11 @@ const styles = StyleSheet.create({
   },
   disclaimerText: {
     color: '#7C7C84',
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Semibold',
     textAlign: 'center',
-    marginTop: 8,
+    marginTop: 4,
+    marginBottom: 2,
   },
   scrim: {
     flex: 1,
@@ -4639,14 +4427,21 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     zIndex: 40,
-    backgroundColor: '#000000',
+    backgroundColor: '#060608',
+    shadowColor: '#000000',
+    shadowOffset: {width: -8, height: 0},
+    shadowOpacity: 0.7,
+    shadowRadius: 24,
+    elevation: 30,
   },
   contextHeader: {
     minHeight: 58,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
   },
   contextBackButton: {
     width: 36,
@@ -4664,35 +4459,31 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contextEyebrow: {
-    color: '#8E8E93',
+    color: '#34C759',
     fontSize: 10,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    letterSpacing: 1.6,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
   },
   contextTitle: {
     color: '#FFFFFF',
     fontSize: 22,
     fontFamily: 'SF-Pro-Rounded-Bold',
+    lineHeight: 26,
+    marginTop: 1,
   },
   contextScroll: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
+    paddingTop: 8,
     paddingBottom: Platform.OS === 'android' ? 28 : 24,
+    gap: 12,
   },
   contextSpecsCard: {
-    backgroundColor: '#15161A',
+    backgroundColor: '#111114',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.28)',
-    borderRadius: 20,
+    borderColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 18,
     padding: 16,
-    marginBottom: 20,
-    shadowColor: '#FFFFFF',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
-    shadowOpacity: 0.35,
-    shadowRadius: 24,
-    elevation: 12,
   },
   specsHeaderRow: {
     flexDirection: 'row',
@@ -4731,28 +4522,32 @@ const styles = StyleSheet.create({
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
   contextSection: {
-    marginBottom: 24,
+    backgroundColor: '#111114',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
   contextSectionTitle: {
     color: '#FFFFFF',
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   contextSectionDesc: {
     color: '#8E8E93',
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: 'SF-Pro-Rounded-Semibold',
-    lineHeight: 18,
-    marginBottom: 14,
+    lineHeight: 17,
+    marginBottom: 12,
   },
   inputLabel: {
     color: '#8E8E93',
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    letterSpacing: 1,
-    marginBottom: 8,
-    marginTop: 6,
+    marginBottom: 6,
+    marginTop: 4,
   },
   textInput: {
     backgroundColor: 'rgba(255, 255, 255, 0.04)',
@@ -4847,11 +4642,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   toggleThumbActive: {
-    transform: [
-      {
-        translateX: 20,
-      },
-    ],
+    transform: [{translateX: 20}],
     backgroundColor: '#000000',
   },
   segmentedControl: {
@@ -4912,4 +4703,5 @@ const styles = StyleSheet.create({
     marginVertical: 2,
   },
 });
+
 export default ChatScreen;

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, {useRef, useEffect} from 'react';
 import {
   View,
   Text,
@@ -8,15 +8,10 @@ import {
   TouchableOpacity,
   Easing,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import {
-  CheckCircle,
-  LockKeyhole,
-  ServerOff,
-  WifiOff,
-  ArrowRight,
-} from 'lucide-react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {CheckCircle, LockKeyhole, ServerOff, WifiOff, ArrowRight} from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
 const PRIVACY_POINTS = [
   {
     title: 'Runs 100% Offline',
@@ -43,17 +38,23 @@ const PRIVACY_POINTS = [
     border: 'rgba(52, 199, 89, 0.2)',
   },
 ];
-const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
+
+const ModelReadyScreen = ({onComplete}: {onComplete: () => void}) => {
   const insets = useSafeAreaInsets();
+  
   const [modelName, setModelName] = React.useState('Your AI');
+
   const scaleAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const glowAnim = useRef(new Animated.Value(0.3)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+
   useEffect(() => {
     AsyncStorage.getItem('selectedModelName').then(name => {
-      if (name) setModelName(name);
+      if(name) setModelName(name);
     });
+
+    // Premium spring animation on success
     Animated.sequence([
       Animated.spring(scaleAnim, {
         toValue: 1,
@@ -65,8 +66,10 @@ const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
         toValue: 1,
         duration: 400,
         useNativeDriver: true,
-      }),
+      })
     ]).start();
+
+    // Breathing glow animation loop
     Animated.loop(
       Animated.sequence([
         Animated.timing(glowAnim, {
@@ -81,8 +84,10 @@ const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
-      ]),
+      ])
     ).start();
+
+    // Pulsing button scale loop
     Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
@@ -97,94 +102,52 @@ const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
           easing: Easing.inOut(Easing.ease),
           useNativeDriver: true,
         }),
-      ]),
+      ])
     ).start();
   }, [scaleAnim, fadeAnim, glowAnim, pulseAnim]);
+
   const handleStartChat = async () => {
+    // Mark setup as complete
     await AsyncStorage.setItem('hasOnboarded', 'true');
+    // Go to Chat Screen
     onComplete();
   };
+
   return (
-    <View
-      style={[
-        styles.container,
-        {
-          paddingTop: insets.top,
-        },
-      ]}
-    >
+    <View style={[styles.container, {paddingTop: insets.top}]}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        bounces={false}
-      >
+        bounces={false}>
         <View style={styles.content}>
-          <Animated.View
-            style={[
-              styles.iconContainer,
-              {
-                transform: [
-                  {
-                    scale: scaleAnim,
-                  },
-                ],
-              },
-            ]}
-          >
+          <Animated.View style={[styles.iconContainer, {transform: [{scale: scaleAnim}]}]}>
             <CheckCircle color="#0A84FF" size={58} strokeWidth={2.2} />
           </Animated.View>
 
-          <Animated.View
-            style={[
-              styles.textContainer,
-              {
-                opacity: fadeAnim,
-                transform: [
-                  {
-                    translateY: fadeAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [18, 0],
-                    }),
-                  },
-                ],
-              },
-            ]}
-          >
+          <Animated.View style={[styles.textContainer, {opacity: fadeAnim, transform: [{translateY: fadeAnim.interpolate({inputRange: [0, 1], outputRange: [18, 0]})}]}]}>
             <Text style={styles.title}>Model Downloaded</Text>
             <Text style={styles.subtitle}>
               {modelName} is saved to secure local storage.
             </Text>
-
+            
             <View style={styles.infoBox}>
-              {PRIVACY_POINTS.map(
-                ({ title, caption, Icon, color, bg, border }, index) => (
-                  <View
-                    style={[
-                      styles.infoRow,
-                      index < PRIVACY_POINTS.length - 1 &&
-                        styles.infoRowDivider,
-                    ]}
-                    key={title}
-                  >
-                    <View
-                      style={[
-                        styles.infoIconWrap,
-                        {
-                          backgroundColor: bg,
-                          borderColor: border,
-                        },
-                      ]}
-                    >
-                      <Icon color={color} size={16} strokeWidth={2.4} />
-                    </View>
-                    <View style={styles.infoCopy}>
-                      <Text style={styles.infoTitle}>{title}</Text>
-                      <Text style={styles.infoCaption}>{caption}</Text>
-                    </View>
+              {PRIVACY_POINTS.map(({title, caption, Icon, color, bg, border}, index) => (
+                <View
+                  style={[
+                    styles.infoRow,
+                    index < PRIVACY_POINTS.length - 1 && styles.infoRowDivider,
+                  ]}
+                  key={title}>
+                  <View style={[styles.infoIconWrap, {backgroundColor: bg, borderColor: border}]}>
+                    <Icon color={color} size={16} strokeWidth={2.4} />
                   </View>
-                ),
-              )}
+                  <View style={styles.infoCopy}>
+                    <Text style={styles.infoTitle}>{title}</Text>
+                    <Text style={styles.infoCaption}>{caption}</Text>
+                  </View>
+                </View>
+              ))}
             </View>
           </Animated.View>
         </View>
@@ -196,23 +159,12 @@ const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
           {
             opacity: fadeAnim,
             paddingBottom: Math.max(insets.bottom + 14, 24),
-            transform: [
-              {
-                scale: pulseAnim,
-              },
-            ],
+            transform: [{scale: pulseAnim}],
           },
         ]}
       >
         <View style={styles.buttonWrapper}>
-          <Animated.View
-            style={[
-              styles.buttonGlow,
-              {
-                opacity: glowAnim,
-              },
-            ]}
-          />
+          <Animated.View style={[styles.buttonGlow, {opacity: glowAnim}]} />
           <TouchableOpacity
             style={styles.button}
             onPress={handleStartChat}
@@ -220,12 +172,7 @@ const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
           >
             <View style={styles.buttonContent}>
               <Text style={styles.buttonText}>Continue to Chat</Text>
-              <ArrowRight
-                color="#000000"
-                size={18}
-                strokeWidth={2.5}
-                style={styles.buttonIcon}
-              />
+              <ArrowRight color="#000000" size={18} strokeWidth={2.5} style={styles.buttonIcon} />
             </View>
           </TouchableOpacity>
         </View>
@@ -233,6 +180,7 @@ const ModelReadyScreen = ({ onComplete }: { onComplete: () => void }) => {
     </View>
   );
 };
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -294,10 +242,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.12)',
     shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 12,
-    },
+    shadowOffset: {width: 0, height: 12},
     shadowOpacity: 0.24,
     shadowRadius: 20,
     elevation: 8,
@@ -358,10 +303,7 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     backgroundColor: '#FFFFFF',
     shadowColor: '#FFFFFF',
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
+    shadowOffset: {width: 0, height: 0},
     shadowOpacity: 0.9,
     shadowRadius: 22,
     elevation: 8,
@@ -373,10 +315,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#FFFFFF',
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: {width: 0, height: 4},
     shadowOpacity: 0.15,
     shadowRadius: 12,
     elevation: 4,
@@ -397,4 +336,5 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
 });
+
 export default ModelReadyScreen;

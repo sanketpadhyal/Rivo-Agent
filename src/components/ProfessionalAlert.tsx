@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {
   Animated,
   Easing,
@@ -8,21 +8,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {
-  AlertCircle,
-  Cpu,
-  HardDrive,
-  LogOut,
-  Power,
-  Trash2,
-} from 'lucide-react-native';
-type AlertIconName =
-  | 'alert-circle'
-  | 'cpu'
-  | 'hard-drive'
-  | 'log-out'
-  | 'trash-2'
-  | 'power';
+import {AlertCircle, Cpu, HardDrive, LogOut, Power, Trash2} from 'lucide-react-native';
+
+type AlertIconName = 'alert-circle' | 'cpu' | 'hard-drive' | 'log-out' | 'trash-2' | 'power';
+
 type Props = {
   visible: boolean;
   title: string;
@@ -35,6 +24,7 @@ type Props = {
   isDestructive?: boolean;
   iconName?: AlertIconName;
 };
+
 const iconMap = {
   'alert-circle': AlertCircle,
   cpu: Cpu,
@@ -43,6 +33,7 @@ const iconMap = {
   'trash-2': Trash2,
   power: Power,
 };
+
 const ProfessionalAlert: React.FC<Props> = ({
   visible,
   title,
@@ -58,14 +49,15 @@ const ProfessionalAlert: React.FC<Props> = ({
   const [mounted, setMounted] = useState(visible);
   const opacity = useRef(new Animated.Value(0)).current;
   const scale = useRef(new Animated.Value(0.5)).current;
-  const resolvedIconName =
-    iconName === 'alert-circle' && isDestructive ? 'log-out' : iconName;
+  const resolvedIconName = iconName === 'alert-circle' && isDestructive ? 'log-out' : iconName;
   const Icon = iconMap[resolvedIconName] || AlertCircle;
+
   useEffect(() => {
     if (visible) {
       setMounted(true);
       opacity.setValue(0);
       scale.setValue(0.5);
+
       Animated.parallel([
         Animated.timing(opacity, {
           toValue: 1,
@@ -83,6 +75,7 @@ const ProfessionalAlert: React.FC<Props> = ({
       ]).start();
       return;
     }
+
     if (mounted) {
       Animated.parallel([
         Animated.timing(opacity, {
@@ -100,41 +93,19 @@ const ProfessionalAlert: React.FC<Props> = ({
       ]).start(() => setMounted(false));
     }
   }, [mounted, opacity, scale, visible]);
+
   const hasConfirm = typeof onConfirm === 'function';
+
   return (
     <Modal
       visible={mounted}
       transparent
       animationType="none"
       statusBarTranslucent
-      onRequestClose={onClose}
-    >
-      <Animated.View
-        style={[
-          styles.host,
-          {
-            opacity,
-          },
-        ]}
-      >
-        <Animated.View
-          style={[
-            styles.card,
-            {
-              transform: [
-                {
-                  scale,
-                },
-              ],
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.iconWrap,
-              isDestructive && styles.destructiveIconWrap,
-            ]}
-          >
+      onRequestClose={onClose}>
+      <Animated.View style={[styles.host, {opacity}]}>
+        <Animated.View style={[styles.card, {transform: [{scale}]}]}>
+          <View style={[styles.iconWrap, isDestructive && styles.destructiveIconWrap]}>
             <Icon
               size={24}
               color={isDestructive ? '#FF453A' : '#FFD60A'}
@@ -147,37 +118,20 @@ const ProfessionalAlert: React.FC<Props> = ({
 
           {hasConfirm ? (
             <View style={styles.rowActions}>
-              <TouchableOpacity
-                activeOpacity={0.76}
-                style={styles.cancelBtn}
-                onPress={onClose}
-              >
+              <TouchableOpacity activeOpacity={0.76} style={styles.cancelBtn} onPress={onClose}>
                 <Text style={styles.cancelBtnText}>{cancelLabel}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 activeOpacity={0.86}
-                style={[
-                  styles.confirmBtn,
-                  isDestructive && styles.destructiveBtn,
-                ]}
-                onPress={onConfirm}
-              >
-                <Text
-                  style={[
-                    styles.confirmBtnText,
-                    isDestructive && styles.destructiveBtnText,
-                  ]}
-                >
+                style={[styles.confirmBtn, isDestructive && styles.destructiveBtn]}
+                onPress={onConfirm}>
+                <Text style={[styles.confirmBtnText, isDestructive && styles.destructiveBtnText]}>
                   {confirmLabel || 'Confirm'}
                 </Text>
               </TouchableOpacity>
             </View>
           ) : (
-            <TouchableOpacity
-              activeOpacity={0.86}
-              style={styles.action}
-              onPress={onClose}
-            >
+            <TouchableOpacity activeOpacity={0.86} style={styles.action} onPress={onClose}>
               <Text style={styles.actionText}>{actionLabel}</Text>
             </TouchableOpacity>
           )}
@@ -186,6 +140,7 @@ const ProfessionalAlert: React.FC<Props> = ({
     </Modal>
   );
 };
+
 const styles = StyleSheet.create({
   host: {
     flex: 1,
@@ -205,10 +160,7 @@ const styles = StyleSheet.create({
     paddingTop: 22,
     paddingBottom: 22,
     shadowColor: '#000000',
-    shadowOffset: {
-      width: 0,
-      height: 18,
-    },
+    shadowOffset: {width: 0, height: 18},
     shadowOpacity: 0.28,
     shadowRadius: 28,
     elevation: 14,
@@ -293,4 +245,5 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 });
+
 export default ProfessionalAlert;

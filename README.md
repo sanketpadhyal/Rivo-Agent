@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sanketpadhyal/Rivo-Agent/releases/download/v1.0.0/rivo-agent.apk"><strong>Download Android APK</strong></a>
+  <a href="https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.0.0/rivo-agent-v2.apk"><strong>Download Android APK</strong></a>
   &nbsp;&middot;&nbsp;
   <a href="../../releases">All Releases</a>
   &nbsp;&middot;&nbsp;
@@ -20,7 +20,7 @@
 
 <p align="center">
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/badge/Rivo_Agent-v1.0.0-111111?style=for-the-badge" alt="Rivo Agent v1.0.0" />
+    <img src="https://img.shields.io/badge/Rivo_Agent-v2.0.0-111111?style=for-the-badge" alt="Rivo Agent v2.0.0" />
   </a>
   <a href="../../releases/latest">
     <img src="https://img.shields.io/badge/App-Download_Latest-00A86B?style=for-the-badge" alt="Download the latest Rivo Agent app" />
@@ -35,6 +35,23 @@
 > [!IMPORTANT]
 > Read here how the LLM is actually working in your device:
 > https://rivo-agent.netlify.app/blog
+
+## What's New in Rivo Agent v2.0.0
+
+Rivo Agent v2.0.0 is a major feature release introducing dedicated Coding Thread Locking, an upgraded Markdown & Compact Code Renderer, inline Context Compaction badges, edge-to-edge Android keyboard alignment, strict Neural Personality & Emoji prompt enforcement, dynamic model logo badges, and new model additions.
+
+### Major Highlights
+
+- Dedicated Coding Thread Lock & 1-Tap Reset: Automatically locks threads after code generation to preserve peak GPU performance and prevent context slowdowns. Replaces the composer bar with a clean white `[ Smartphone ] Start New Thread ->` button for instant 1-tap fresh chat creation.
+- Upgraded Markdown & Compact Code Renderer: Markdown headings (e.g. `### Explanation:`) now render as clean bold section titles, list items render with green bullet dots (`*`), and inline code renders inside green code pills.
+- New Supported Models: Added support for Qwen 2.5 Coder 1.5B, DeepSeek R1 Distill Qwen 1.5B, and SmolLM2 1.7B in the model catalog.
+- Android Edge-to-Edge Keyboard Alignment: Implemented dynamic soft keyboard height tracking (`keyboardDidShow` / `keyboardDidHide`). The input bar (*"Ask Rivo offline"*) sits 100% flush directly above the soft keyboard with zero black gap.
+- Inline Context Compaction Status Badges: Live header feedback (`Context Compact Pending...`) and an inline green stream badge when older history is summarized (`--- Context Compacted (Success - N msgs) ---`).
+- Touch-Scrolling & Virtualization Stability: Added `flex: 1` touch gesture capture to `<FlatList>` and upgraded virtualization limits (`initialNumToRender: 50`, `windowSize: 21`) so messages never vanish or collapse layout height during fast scrolling.
+- Enforced Neural Personality & Emoji Prompts: Direct system prompt rules for `HIGH`, `LOW`, `MED`, and `NONE` emoji usage modes across all execution modes (Normal & Performance).
+- Dynamic Model Logo Badges: Official model logo badges (`Qwen`, `Llama`, `Gemma`, `DeepSeek`, `SmolLM`) now display next to the model display name in the chat header selector button.
+
+---
 
 ## About Rivo Agent
 
@@ -67,7 +84,7 @@ Rivo uses Firebase Auth and Google Sign-In for app access. The assistant convers
 
 The latest documented Android build is available here:
 
-[Download Rivo Agent v1.0.0 APK](https://github.com/sanketpadhyal/Rivo-Agent/releases/download/v1.0.0/rivo-agent.apk)
+[Download Rivo Agent v2.0.0 APK](https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.0.0/rivo-agent-v2.apk)
 
 1. Download the APK on an Android device.
 2. Open the downloaded `.apk` file.
@@ -103,6 +120,7 @@ Use the [Releases page](../../releases) for official builds and release notes.
 - Keep recent chats saved locally on the device.
 - Create up to seven local threads.
 - Load or delete previous local threads.
+- Dedicated coding session thread locking to keep future chat replies fast.
 - Store short user memory and assistant preferences.
 - Compact long conversations into smaller memory notes.
 - Use Performance Mode to keep memory usage lighter on lower-end devices.
@@ -111,7 +129,7 @@ Use the [Releases page](../../releases) for official builds and release notes.
 
 - Rename the assistant.
 - Adjust assistant personality.
-- Set emoji behavior.
+- Set emoji behavior (HIGH, MED, LOW, NONE).
 - Add the user's name and memory notes.
 - Choose maximum generation tokens.
 - Tune active context size.
@@ -158,7 +176,9 @@ Rivo currently supports a curated set of GGUF models hosted on Hugging Face.
 | --- | --- | ---: | ---: |
 | Qwen 2.5 0.5B | `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` | Any | 0.40 GB |
 | Llama 3.2 1B | `Llama-3.2-1B-Instruct-Q4_K_M.gguf` | 2 GB | 0.81 GB |
-| Qwen 2.5 1.5B | `Qwen2.5-1.5B-Instruct-Q4_K_M.gguf` | 2 GB | 0.99 GB |
+| Qwen 2.5 Coder 1.5B | `Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf` | 2 GB | 0.99 GB |
+| DeepSeek R1 Distill Qwen 1.5B | `DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf` | 2 GB | 1.12 GB |
+| SmolLM2 1.7B | `SmolLM2-1.7B-Instruct-Q4_K_M.gguf` | 2 GB | 1.06 GB |
 | Gemma 2B | `gemma-2-2b-it-IQ3_M.gguf` | 3 GB | 1.39 GB |
 | Qwen 2.5 3B | `Qwen2.5-3B-Instruct-Q4_K_M.gguf` | 4 GB | 1.93 GB |
 | Llama 3.2 3B | `Llama-3.2-3B-Instruct-Q4_K_M.gguf` | 4 GB | 2.02 GB |
@@ -176,7 +196,7 @@ Rivo is a React Native app with native Android support for local model files.
 - `llama.rn` loads the selected GGUF file and runs local completions.
 - Firebase Auth and Google Sign-In handle app access.
 - `AsyncStorage` stores local app state, chat threads, memory, settings, and model metadata.
-- `@kesha-antonov/react-native-background-downloader` handles large model downloads.
+- `@kesha-antonov/react-native-backgrounddownloader` handles large model downloads.
 - `react-native-device-info` reads RAM, storage, and device details for model recommendations.
 - A custom Kotlin module verifies, migrates, copies, and deletes model files.
 - A custom Kotlin clipboard module supports message and code copying.
@@ -268,11 +288,9 @@ Before publishing a new Android build:
 - Confirm model download, verification, chat, copy, share, logout, and cleanup flows.
 - Update the GitHub release tag, APK link, and README release notes.
 
-## About This Repository
+## License & Open Source Terms
 
-This repository contains the Rivo Agent mobile app, Android native project, iOS scaffold, tests, documentation, screenshots, and companion website source.
-
-The repository is private and maintained by the developer. The source code, app assets, and implementation details are not licensed for copying, redistribution, or commercial reuse.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Developer
 
@@ -285,8 +303,6 @@ Support: `sanketpadhyal3@gmail.com`
 Rivo runs local AI models that can produce incorrect, incomplete, or unexpected responses. Users should verify critical information before relying on any answer.
 
 Rivo does not claim ownership of third-party model weights, logos, names, or provider assets referenced by the application. All third-party model files remain subject to their original licenses and hosting terms.
-
-All rights reserved.
 
 ## Local Development Setup
 
@@ -309,7 +325,7 @@ Install:
 ### 2. Clone the repository
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/sanketpadhyal/Rivo-Agent-Application.git
 cd "Rivo-Agent-Application"
 ```
 
