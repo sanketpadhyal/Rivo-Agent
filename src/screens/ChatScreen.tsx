@@ -52,6 +52,7 @@ import {
   Sparkles,
   Laptop,
   Zap,
+  Sliders,
 } from 'lucide-react-native';
 import Svg, {Path} from 'react-native-svg';
 
@@ -66,7 +67,7 @@ import auth from '@react-native-firebase/auth';
 import DeviceInfo from 'react-native-device-info';
 import {initLlama, LlamaContext, RNLlamaOAICompatibleMessage} from 'llama.rn';
 import {getModelFilePath, getSelectedInstalledModel, deleteModelFile} from '../utils/modelInstallStatus';
-import {findCatalogModel} from '../data/modelCatalog';
+import {findCatalogModel, renderModelLogoSource} from '../data/modelCatalog';
 import {getExistingDownloadTasks} from '@kesha-antonov/react-native-background-downloader';
 import ProfessionalAlert from '../components/ProfessionalAlert';
 
@@ -82,6 +83,8 @@ type ChatMessage = {
   text: string;
   interrupted?: boolean;
   isTruncated?: boolean;
+  thoughtTimeMs?: number;
+  totalTimeMs?: number;
 };
 
 type MessageSegment =
@@ -99,7 +102,7 @@ type StoredThread = {
   isCodingLocked?: boolean;
 };
 
-type ResponsePhase = 'idle' | 'thinking' | 'composing';
+type ResponsePhase = 'idle' | 'setting_up' | 'thinking' | 'composing';
 
 type CompletionTextResult = {
   content?: string;
@@ -332,18 +335,25 @@ const extractNameFromMemory = (memory: string) => {
 const isGreetingPrompt = (text: string) =>
   /^(hi|hello|hey|yo|hiya|sup|hola|namaste|good\s+(morning|afternoon|evening))(?:\s+(rivo|bro|buddy|there|sir))?[!.?\s]*$/i.test(text.trim());
 
-const isIdentityFallback = (text: string, aiName: string) => {
-  const namePattern = new RegExp(`\\b(i'?m|i am)\\s+${escapeRegExp(aiName)}\\b`, 'i');
+const isIdentityFallback = (response: string, aiName: string) => {
+  const trimmed = response.trim();
   return (
-    namePattern.test(text) ||
-    /\bprivate offline assistant\b/i.test(text) ||
-    /\bhow can i (assist|help) you( today)?\b/i.test(text)
+    trimmed.startsWith('Hello!') ||
+    trimmed.startsWith('Hi!') ||
+    /\bhow can i (assist|help) you( today)?\b/i.test(response)
   );
 };
 
-const isCodeLikeResponse = (text: string) =>
-  /```|#include|#define|import\s+\w+|from\s+\w+\s+import|\bint\s+|\bdouble\s+|\bfloat\s+|\bchar\s+|\bvoid\s+|\bstruct\s+|\bclass\s+|\bpublic\s+|\bprivate\s+|\bprintf\(|\bstd::|\bcout\b|\breturn\s+|\bfunction\s+|\bdef\s+|\bconst\s+|\blet\s+|\bvar\s+|\bval\s+|\bfn\s+|\bpackage\s+|\busing\s+|\bnamespace\s+|;\s*$/m.test(text) ||
-  /\b(code|program|script|c language|python|java|cpp|c\+\+|html|css|sql|rust|golang|typescript|javascript|react|kotlin|swift|function|algorithm)\b/i.test(text);
+const formatThoughtTime = (ms?: number) => {
+  if (!ms || ms <= 0) return null;
+  const sec = ms / 1000;
+  return `Thought for ${sec.toFixed(1).replace(/\.0$/, '')}s`;
+};
+
+const isCodeLikeResponse = (text: string) => {
+  if (!text) return false;
+  return /```|#include|#define|import\s+\w+|from\s+\w+\s+import|\bint\s+\w+|\bdouble\s+\w+|\bfloat\s+\w+|\bchar\s+\w+|\bvoid\s+\w+|\bstruct\s+\w+|\bclass\s+\w+|\bprintf\(|\bstd::|\bcout\b|\bdef\s+\w+|\bfunction\s+\w+|\bpackage\s+\w+/m.test(text);
+};
 
 const shouldRepairResponse = (prompt: string, response: string, aiName: string) =>
   !isCodeLikeResponse(response) &&
@@ -563,6 +573,11 @@ const ThinkingText = ({
   const [dotCount, setDotCount] = useState(1);
   const labelBase = label.replace(/\.+$/, '');
 
+  const isSettingUp =
+    labelBase.toLowerCase().includes('setting up') ||
+    labelBase.toLowerCase().includes('initializ') ||
+    labelBase.toLowerCase().includes('preparing');
+
   useEffect(() => {
     Animated.timing(progress, {
       toValue: isHiding ? 0 : 1,
@@ -602,8 +617,14 @@ const ThinkingText = ({
   return (
     <Animated.View style={[styles.thinkingTextWrap, animatedStyle]}>
       <View style={styles.thinkingTitleRow}>
-        <Lightbulb color="#FFFFFF" size={19} strokeWidth={2.1} />
-        <Text style={styles.thinkingText}>{`${labelBase} ${'.'.repeat(dotCount)}`}</Text>
+        {isSettingUp ? (
+          <Sliders color="#0A84FF" size={18} strokeWidth={2.2} />
+        ) : (
+          <Lightbulb color="#FFFFFF" size={19} strokeWidth={2.1} />
+        )}
+        <Text style={[styles.thinkingText, isSettingUp && { color: '#0A84FF' }]}>
+          {`${labelBase} ${'.'.repeat(dotCount)}`}
+        </Text>
       </View>
       <View style={styles.thinkingTrace}>
         {lines.map((line, index) => {
@@ -782,7 +803,7 @@ const MessageBubble = memo(({
   isThinkingHiding: boolean;
   item: ChatMessage;
   thinkingLines: string[];
-  modelLogo?: string;
+  modelLogo?: any;
 }) => {
   const appear = useRef(new Animated.Value(0)).current;
   const messageCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -881,7 +902,7 @@ const MessageBubble = memo(({
           {!isUser && (
             <View style={styles.agentGlyphSmall}>
               {modelLogo ? (
-                <Image source={{uri: modelLogo}} style={styles.modelLogoSmall} resizeMode="contain" />
+                <Image source={renderModelLogoSource(modelLogo)} style={styles.modelLogoSmall} resizeMode="contain" />
               ) : (
                 <Image source={logoSource} style={styles.agentLogoSmall} resizeMode="contain" />
               )}
@@ -957,6 +978,9 @@ const MessageBubble = memo(({
             </View>
             {item.text.trim().length > 0 && !isLive && (
               <View style={!isUser && styles.assistantActionsContainer}>
+                {!isUser && Boolean(formatThoughtTime(item.thoughtTimeMs)) && (
+                  <Text style={styles.thoughtTimeText}>{formatThoughtTime(item.thoughtTimeMs)}</Text>
+                )}
                 <View style={[styles.messageActions, isUser && styles.userMessageActions]}>
                   <TouchableOpacity
                     activeOpacity={0.78}
@@ -1003,6 +1027,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const contextX = useRef(new Animated.Value(windowWidth)).current;
   const openContextPanelFrameRef = useRef<number | null>(null);
   const sendScale = useRef(new Animated.Value(1)).current;
+  const emptyLogoPulseAnim = useRef(new Animated.Value(0)).current;
   const performanceToggleAnim = useRef(new Animated.Value(0)).current;
   const contextPulseAnim = useRef(new Animated.Value(1)).current;
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1028,7 +1053,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const messagesRef = useRef<ChatMessage[]>([]);
 
   // State
-  const [activeThreadId, setActiveThreadId] = useState(createThreadId);
+  const [activeThreadId, setActiveThreadId] = useState(() => createThreadId());
   const [threads, setThreads] = useState<StoredThread[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -1038,7 +1063,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const [memorySummary, setMemorySummary] = useState('');
   const [userMemory, setUserMemory] = useState('');
   const [compactedCount, setCompactedCount] = useState(0);
-  const [_responsePhase, setResponsePhase] = useState<ResponsePhase>('idle');
+  const [responsePhase, setResponsePhase] = useState<ResponsePhase>('idle');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isInfoTransitionActive, setIsInfoTransitionActive] = useState(false);
@@ -1076,6 +1101,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const [isThinkingFading, setIsThinkingFading] = useState(false);
   const [isCurrentThreadCodingLocked, setIsCurrentThreadCodingLocked] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const androidKeyboardOffsetAnim = useRef(new Animated.Value(0)).current;
   const [isAndroidKeyboardVisible, setIsAndroidKeyboardVisible] = useState(false);
   const [androidKeyboardLift, setAndroidKeyboardLift] = useState(0);
 
@@ -1086,6 +1112,33 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       outputRange: [0, 1],
     });
   }, [menuX]);
+
+  const emptyLogoGlowScale = useMemo(
+    () =>
+      emptyLogoPulseAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 1.15],
+      }),
+    [emptyLogoPulseAnim],
+  );
+
+  const emptyLogoGlowOpacity = useMemo(
+    () =>
+      emptyLogoPulseAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.22, 0.65],
+      }),
+    [emptyLogoPulseAnim],
+  );
+
+  const emptyLogoScale = useMemo(
+    () =>
+      emptyLogoPulseAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 1.03],
+      }),
+    [emptyLogoPulseAnim],
+  );
 
   const recentThreads = useMemo(
     () => [...threads].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_THREADS),
@@ -1102,8 +1155,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     return messages.some(
       msg =>
         (msg.role === 'assistant' && isCodeLikeResponse(msg.text)) ||
-        (msg.role === 'notice' && msg.text.includes('Coding session')) ||
-        (msg.role === 'user' && isCodeLikeResponse(msg.text)),
+        (msg.role === 'notice' && msg.text.includes('Coding session')),
     );
   }, [isCurrentThreadCodingLocked, messages]);
 
@@ -1176,6 +1228,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         storedMaxTokens,
         storedKeepMessages,
         storedIsPerfMode,
+        storedUserName,
+        storedUserMemoryBullets,
       ] = await Promise.all([
         AsyncStorage.getItem(CHAT_THREADS_KEY),
         AsyncStorage.getItem(ACTIVE_THREAD_KEY),
@@ -1188,6 +1242,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         AsyncStorage.getItem('rivo.neural.maxTokens'),
         AsyncStorage.getItem('rivo.neural.keepMessages'),
         AsyncStorage.getItem('rivo.neural.isPerformanceMode'),
+        AsyncStorage.getItem('rivo.neural.userName'),
+        AsyncStorage.getItem('rivo.neural.userMemoryBullets'),
       ]);
 
       const parsedThreads: StoredThread[] = storedThreads ? JSON.parse(storedThreads) : [];
@@ -1236,6 +1292,14 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       if (storedAiEmojiQuantity) {
         setAiEmojiQuantity(storedAiEmojiQuantity as 'none' | 'low' | 'medium' | 'high');
         setLocalAiEmojiQuantity(storedAiEmojiQuantity as 'none' | 'low' | 'medium' | 'high');
+      }
+
+      // Hydrate About You user profile states
+      if (storedUserName) {
+        setLocalName(storedUserName);
+      }
+      if (storedUserMemoryBullets) {
+        setLocalMemoryBullets(storedUserMemoryBullets);
       }
 
       // Hydrate optimization settings if they exist
@@ -1462,23 +1526,6 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const openContextPanel = useCallback(() => {
     dismissComposerKeyboard();
 
-    // Parse name and other facts from current userMemory
-    const currentName = extractNameFromMemory(userMemory);
-    setLocalName(currentName);
-
-    const otherBullets = userMemory
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line && !line.toLowerCase().startsWith('user name:'))
-      .join('\n');
-    setLocalMemoryBullets(otherBullets);
-
-    // Populate draft AI settings from actual active values
-    setLocalAiName(aiName);
-    setLocalAiPersonality(aiPersonality);
-    setLocalAiEmoji(aiEmoji);
-    setLocalAiEmojiQuantity(aiEmojiQuantity);
-
     contextX.stopAnimation();
     infoBackgroundSlide.stopAnimation();
     if (openContextPanelFrameRef.current) {
@@ -1645,6 +1692,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         ['rivo.neural.aiPersonality', cleanedAiPersonality],
         ['rivo.neural.aiEmoji', cleanedAiEmoji],
         ['rivo.neural.aiEmojiQuantity', nextAiEmojiQuantity],
+        ['rivo.neural.userName', localName],
+        ['rivo.neural.userMemoryBullets', localMemoryBullets],
         ['rivo.neural.maxTokens', String(maxTokens)],
         ['rivo.neural.keepMessages', String(keepMessages)],
         ['rivo.neural.isPerformanceMode', String(isPerformanceMode)],
@@ -1662,6 +1711,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     localAiEmojiQuantity,
     localAiName,
     localAiPersonality,
+    localName,
+    localMemoryBullets,
     maxTokens,
   ]);
 
@@ -1842,6 +1893,25 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   }, [isGenerating, scrollToEnd]);
 
   useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(emptyLogoPulseAnim, {
+          toValue: 1,
+          duration: 1800,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(emptyLogoPulseAnim, {
+          toValue: 0,
+          duration: 1800,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    ).start();
+  }, [emptyLogoPulseAnim]);
+
+  useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
 
@@ -1849,14 +1919,30 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       const height = e?.endCoordinates?.height ?? 0;
       if (height > 0) {
         setKeyboardHeight(height);
+        if (Platform.OS === 'android') {
+          Animated.timing(androidKeyboardOffsetAnim, {
+            toValue: Math.max(0, height + 16),
+            duration: e?.duration || 160,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: false,
+          }).start();
+        }
       }
       if (!userScrolledUpRef.current) {
         scrollToEnd(true);
       }
     };
 
-    const onHide = () => {
+    const onHide = (e: any) => {
       setKeyboardHeight(0);
+      if (Platform.OS === 'android') {
+        Animated.timing(androidKeyboardOffsetAnim, {
+          toValue: 0,
+          duration: e?.duration || 160,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: false,
+        }).start();
+      }
     };
 
     const showSub = Keyboard.addListener(showEvent, onShow);
@@ -1866,7 +1952,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       showSub.remove();
       hideSub.remove();
     };
-  }, [scrollToEnd]);
+  }, [androidKeyboardOffsetAnim, insets.bottom, scrollToEnd]);
 
   const pulseSend = useCallback(() => {
     Animated.sequence([
@@ -2000,14 +2086,16 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     let activeAssistantId = assistantId;
     let activeResponsePrefix = '';
     let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const generationStartTime = Date.now();
+    let firstTokenTime = 0;
 
     try {
       let activeMemorySummary = memorySummary;
 
       setInput('');
       setIsGenerating(true);
-      setResponsePhase('thinking');
-      setStatus('Thinking');
+      setResponsePhase('setting_up');
+      setStatus('Setting up');
       setMessagesAndRef([...messagesRef.current, userMessage, assistantMessage]);
       scrollToEnd(true);
       const context = await ensureModel();
@@ -2146,6 +2234,12 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           return;
         }
 
+        if (!firstTokenTime) {
+          firstTokenTime = Date.now();
+        }
+
+        setResponsePhase('thinking');
+        setStatus('Thinking');
         streamedText = nextStreamedText;
         if (!didFeelReplyStartRef.current) {
           didFeelReplyStartRef.current = true;
@@ -2200,11 +2294,16 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       if (trimmedFinal && !hasLettersOrDigits) {
         finalText = `Hello! ${trimmedFinal} How can I help you today?`;
       }
+      const thoughtDuration = firstTokenTime > 0 ? (firstTokenTime - generationStartTime) : (Date.now() - generationStartTime);
+      const totalDuration = Date.now() - generationStartTime;
+
       let finalAssistantMessages: ChatMessage[] = [
         {
           id: assistantId,
           role: 'assistant',
           text: finalText || 'I could not generate a response.',
+          thoughtTimeMs: thoughtDuration,
+          totalTimeMs: totalDuration,
         },
       ];
 
@@ -2331,12 +2430,15 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       if (!wasInterrupted) {
         lightHaptic();
       }
-      scrollToEnd(true);
+      scrollToEnd(true, true);
+      setTimeout(() => {
+        scrollToEnd(true, true);
+      }, 100);
       if (!wasInterrupted) {
         await compactThreadMemory(context, completeMessages, nextUserMemory);
       }
 
-      if (isCodeLikeResponse(prompt) || isCodeLikeResponse(finalText)) {
+      if (isCodeLikeResponse(finalText)) {
         setIsCurrentThreadCodingLocked(true);
       }
     } catch (error) {
@@ -2371,8 +2473,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               item.text.trim().length > 0
             )),
         );
-        const isCodingInterrupted = isCodeLikeResponse(prompt) || isCodeLikeResponse(interruptedText);
-        if (isCodingInterrupted) {
+        if (isCodeLikeResponse(interruptedText)) {
           setIsCurrentThreadCodingLocked(true);
         }
         setStatus('Private offline');
@@ -2636,18 +2737,20 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     [thinkingTrace, visibleThinkingLineCount],
   );
 
+  const activeGenerationLabel = responsePhase === 'setting_up' ? 'Setting up...' : 'Thinking...';
+
   const renderMessage = useCallback(
     ({item}: {item: ChatMessage}) => (
       <MessageBubble
         item={item}
         isLive={item.id === liveAssistantId}
         isThinkingHiding={item.id === liveAssistantId && isThinkingFading}
-        generationLabel="Thinking..."
+        generationLabel={activeGenerationLabel}
         thinkingLines={item.id === liveAssistantId ? visibleThinkingLines : []}
         modelLogo={activeCatalogModel?.logo}
       />
     ),
-    [isThinkingFading, liveAssistantId, visibleThinkingLines, activeCatalogModel?.logo],
+    [isThinkingFading, liveAssistantId, activeGenerationLabel, visibleThinkingLines, activeCatalogModel?.logo],
   );
 
   const shouldShowEmptyOnboarding =
@@ -2656,8 +2759,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     !hasHydrated || (messages.length === 0 && !shouldShowEmptyOnboarding);
   const composerBottomInset = Math.max(insets.bottom, 12);
   const composerBottomPadding = Platform.OS === 'android'
-    ? Math.max(insets.bottom, 10)
-    : insets.bottom;
+    ? (keyboardHeight > 0 ? 8 : Math.max(insets.bottom, 10))
+    : (keyboardHeight > 0 ? 0 : insets.bottom);
 
   const switchBg = performanceToggleAnim.interpolate({
     inputRange: [0, 1],
@@ -2716,7 +2819,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           <View style={styles.modelMark}>
             {activeCatalogModel?.logo ? (
               <Image
-                source={{uri: activeCatalogModel.logo}}
+                source={renderModelLogoSource(activeCatalogModel.logo)}
                 style={styles.modelLogoImage}
                 resizeMode="cover"
               />
@@ -2790,6 +2893,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         windowSize={21}
         contentContainerStyle={[
           styles.chatContent,
+          {paddingTop: insets.top + 62},
           shouldShowChatSkeleton
             ? styles.skeletonChatContent
             : shouldShowEmptyOnboarding && styles.emptyChatContent,
@@ -2799,12 +2903,33 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
             <ChatSkeleton />
           ) : (
             <View style={styles.emptyState}>
-              <View style={styles.emptyLogoMark}>
-                {activeCatalogModel?.logo ? (
-                  <Image source={{uri: activeCatalogModel.logo}} style={styles.emptyModelLogo} resizeMode="contain" />
-                ) : (
-                  <Image source={logoSource} style={styles.emptyLogo} resizeMode="contain" />
-                )}
+              <View style={styles.emptyLogoHost}>
+                <Animated.View
+                  style={[
+                    styles.emptyLogoGlowRing,
+                    {
+                      transform: [{scale: emptyLogoGlowScale}],
+                      opacity: emptyLogoGlowOpacity,
+                    },
+                  ]}
+                />
+                <Animated.View
+                  style={[
+                    styles.emptyLogoMark,
+                    {
+                      transform: [{scale: emptyLogoScale}],
+                    },
+                  ]}>
+                  {activeCatalogModel?.logo ? (
+                    <Image
+                      source={renderModelLogoSource(activeCatalogModel.logo)}
+                      style={styles.emptyModelLogo}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <Image source={logoSource} style={styles.emptyLogo} resizeMode="contain" />
+                  )}
+                </Animated.View>
               </View>
               <View style={styles.promptStack}>
                 <Text style={styles.emptyTitle}>What should we solve?</Text>
@@ -2834,14 +2959,12 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         keyboardShouldPersistTaps="handled"
       />
 
-      <View
+      <Animated.View
         ref={composerHostRef}
         style={[
           styles.composerHost,
           {
-            marginBottom: Platform.OS === 'android' && keyboardHeight > 0
-              ? Math.max(0, keyboardHeight - insets.bottom)
-              : 0,
+            marginBottom: Platform.OS === 'android' ? androidKeyboardOffsetAnim : 0,
             paddingBottom: composerBottomPadding,
           },
         ]}>
@@ -2898,7 +3021,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
             <Text style={styles.disclaimerText}>Local models can make mistakes. Check twice.</Text>
           </>
         )}
-      </View>
+      </Animated.View>
       </Animated.View>
 
       <Animated.View
@@ -3026,8 +3149,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               <Image source={backSource} style={styles.contextBackIcon} resizeMode="contain" />
             </TouchableOpacity>
             <View style={styles.contextHeaderCopy}>
-              <Text style={styles.contextEyebrow}>SYSTEM CORE</Text>
-              <Text style={styles.contextTitle}>Neural Panel</Text>
+              <Text style={styles.contextTitle}>
+                Neural <Text style={{color: '#B7FF25'}}>Panel</Text>
+              </Text>
             </View>
           </View>
           
@@ -3463,11 +3587,16 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
   },
   header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 20,
     minHeight: 54,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: 'rgba(4, 4, 6, 0.94)',
   },
   iconButton: {
     width: 42,
@@ -3557,26 +3686,26 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   contextButton: {
-    width: 34,
-    height: 34,
+    width: 40,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
+    marginLeft: 6,
   },
   contextIcon: {
-    width: 22,
-    height: 22,
+    width: 28,
+    height: 28,
   },
   questionButton: {
-    width: 34,
-    height: 34,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
+    marginLeft: 6,
   },
   questionIcon: {
-    width: 18,
-    height: 18,
+    width: 33,
+    height: 33,
   },
   infoPanel: {
     position: 'absolute',
@@ -3616,7 +3745,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   infoEyebrow: {
-    color: '#34C759',
+    color: '#0A84FF',
     fontSize: 10,
     fontFamily: 'SF-Pro-Rounded-Bold',
     letterSpacing: 2,
@@ -3795,17 +3924,32 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingBottom: 10,
   },
+  emptyLogoHost: {
+    width: 68,
+    height: 68,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 16,
+    marginBottom: 16,
+  },
+  emptyLogoGlowRing: {
+    position: 'absolute',
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+  },
   emptyLogoMark: {
     width: 58,
     height: 58,
     borderRadius: 29,
     backgroundColor: '#0B0B0B',
     borderWidth: 1,
-    borderColor: '#202020',
+    borderColor: '#26262A',
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 20,
-    marginBottom: 20,
     overflow: 'hidden',
   },
   emptyLogo: {
@@ -3886,26 +4030,26 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   agentGlyphSmall: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#0B0B0B',
     borderWidth: 1,
     borderColor: '#202020',
     marginRight: 10,
-    marginTop: 3,
+    marginTop: 2,
     overflow: 'hidden',
   },
   agentLogoSmall: {
-    width: 18,
-    height: 17,
+    width: 22,
+    height: 21,
   },
   modelLogoSmall: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
   },
   messageStack: {
     maxWidth: '86%',
@@ -4082,6 +4226,13 @@ const styles = StyleSheet.create({
   assistantActionsContainer: {
     alignItems: 'flex-start',
     width: '100%',
+  },
+  thoughtTimeText: {
+    color: '#8E8E93',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    marginTop: 6,
+    marginBottom: 2,
   },
   truncatedNoticeText: {
     color: '#FF9500',

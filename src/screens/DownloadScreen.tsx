@@ -9,8 +9,10 @@ import {
   ScrollView,
   Animated,
   Easing,
+  TouchableOpacity,
 } from 'react-native';
-import { FileCode, Activity, Cpu, ShieldCheck, FileText } from 'lucide-react-native';
+import { FileCode, Activity, Cpu, ShieldCheck, FileText, Trash2, X, Pause, Play, Folder } from 'lucide-react-native';
+import ProfessionalAlert from '../components/ProfessionalAlert';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
   getExistingDownloadTasks,
@@ -20,7 +22,7 @@ import {
 } from '@kesha-antonov/react-native-background-downloader';
 import type {DownloadTask} from '@kesha-antonov/react-native-background-downloader';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {findCatalogModel, getModelDownloadUrl, getModelTaskId} from '../data/modelCatalog';
+import {findCatalogModel, getModelDownloadUrl, getModelTaskId, renderModelLogoSource} from '../data/modelCatalog';
 import {
   getInstalledModelFilePath,
   getModelDownloadFilePath,
@@ -31,6 +33,7 @@ type SelectedDownload = {
   id: string;
   name: string;
   desc: string;
+  logo?: any;
   fileName: string;
   byteSize: number;
   minRam: number;
@@ -95,8 +98,111 @@ const requestAndroidDownloadPermissions = async () => {
   }
 };
 
-const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
+const DownloadScreen = ({
+  onComplete,
+  onCancel,
+}: {
+  onComplete: () => void;
+  onCancel?: () => void;
+}) => {
   const insets = useSafeAreaInsets();
+  const activeTaskRef = useRef<DownloadTask | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  const [showCancelAlert, setShowCancelAlert] = useState(false);
+  const [showPauseAlert, setShowPauseAlert] = useState(false);
+  const [showResumeAlert, setShowResumeAlert] = useState(false);
+  const [showFailedAlert, setShowFailedAlert] = useState(false);
+
+  const handleConfirmFailed = async () => {
+    setShowFailedAlert(false);
+    console.log('DownloadScreen: user acknowledged download failure');
+    try {
+      await AsyncStorage.removeItem('isDownloadPaused');
+      let task = activeTaskRef.current;
+      if (!task && selectedDownload) {
+        const safeTaskId = getModelTaskId(selectedDownload);
+        const tasks = await getExistingDownloadTasks();
+        task = tasks.find(t => t.id === safeTaskId) || null;
+      }
+      if (task) {
+        await task.stop();
+      }
+    } catch (e) {
+      console.warn('DownloadScreen: error cleaning up failed task:', e);
+    }
+    if (onCancel) {
+      onCancel();
+    } else {
+      onComplete();
+    }
+  };
+
+  const handleConfirmCancel = async () => {
+    setShowCancelAlert(false);
+    console.log('DownloadScreen: user confirmed cancel download');
+    try {
+      await AsyncStorage.removeItem('isDownloadPaused');
+      let task = activeTaskRef.current;
+      if (!task && selectedDownload) {
+        const safeTaskId = getModelTaskId(selectedDownload);
+        const tasks = await getExistingDownloadTasks();
+        task = tasks.find(t => t.id === safeTaskId) || null;
+      }
+      if (task) {
+        console.log('DownloadScreen: stopping download task on user cancel');
+        await task.stop();
+      }
+    } catch (error) {
+      console.warn('DownloadScreen: error stopping task on cancel:', error);
+    }
+    if (onCancel) {
+      onCancel();
+    } else {
+      onComplete();
+    }
+  };
+
+  const handleConfirmPause = async () => {
+    setShowPauseAlert(false);
+    console.log('DownloadScreen: user confirmed pause download');
+    try {
+      let task = activeTaskRef.current;
+      if (!task && selectedDownload) {
+        const safeTaskId = getModelTaskId(selectedDownload);
+        const tasks = await getExistingDownloadTasks();
+        task = tasks.find(t => t.id === safeTaskId) || null;
+      }
+      if (task) {
+        await task.pause();
+        await AsyncStorage.setItem('isDownloadPaused', 'true');
+        setIsPaused(true);
+        setSpeed('Paused');
+      }
+    } catch (error) {
+      console.warn('DownloadScreen: error pausing task:', error);
+    }
+  };
+
+  const handleConfirmResume = async () => {
+    setShowResumeAlert(false);
+    console.log('DownloadScreen: user confirmed resume download');
+    try {
+      let task = activeTaskRef.current;
+      if (!task && selectedDownload) {
+        const safeTaskId = getModelTaskId(selectedDownload);
+        const tasks = await getExistingDownloadTasks();
+        task = tasks.find(t => t.id === safeTaskId) || null;
+      }
+      if (task) {
+        await task.resume();
+        await AsyncStorage.setItem('isDownloadPaused', 'false');
+        setIsPaused(false);
+        setSpeed('Resuming');
+      }
+    } catch (error) {
+      console.warn('DownloadScreen: error resuming task:', error);
+    }
+  };
   
   const haloAnim = useRef(new Animated.Value(0)).current;
 
@@ -136,6 +242,7 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
         id: catalogModel.id,
         name: catalogModel.name,
         desc: catalogModel.desc,
+        logo: catalogModel.logo,
         fileName,
         byteSize: Number(storedSizeBytes) || catalogModel.byteSize,
         minRam: catalogModel.minRam,
@@ -144,9 +251,11 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
 
       console.log('DownloadScreen: loaded selected model:', model);
       setSelectedDownload(model);
+      setDownloadPath(getModelDownloadFilePath(fileName));
     });
   }, []);
 
+  const [downloadPath, setDownloadPath] = useState('');
   const [progress, setProgress] = useState(0);
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(1);
@@ -334,10 +443,16 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
         console.log('DownloadScreen: reusing existing active task:', safeTaskId, 'in state:', activeTask.state);
       }
 
+      activeTaskRef.current = activeTask;
       console.log('DownloadScreen: attaching listeners to task. State is:', activeTask.state);
       lastTimeRef.current = Date.now();
       lastBytesRef.current = activeTask.bytesDownloaded || 0;
-      setSpeed(activeTask.bytesDownloaded > 0 ? 'Resuming' : 'Preparing');
+      if (activeTask.state === 'PAUSED') {
+        setIsPaused(true);
+        setSpeed('Paused');
+      } else {
+        setSpeed(activeTask.bytesDownloaded > 0 ? 'Resuming' : 'Preparing');
+      }
       
       activeTask.begin(({expectedBytes}) => {
         console.log('DownloadScreen: Task begin - expected bytes:', expectedBytes);
@@ -389,6 +504,7 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
         }
       }).done(({bytesDownloaded, bytesTotal}) => {
         console.log('DownloadScreen: Task done callback triggered!');
+        AsyncStorage.removeItem('isDownloadPaused');
         if (!cancelled) {
           setProgress(1);
           setDownloadedBytes(bytesDownloaded);
@@ -415,23 +531,33 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
         console.error('DownloadScreen: Task error callback triggered:', error);
         if (!cancelled) {
           setSpeed('Failed');
+          setShowFailedAlert(true);
         }
       });
 
-      if (activeTask.state === 'PENDING') {
+      const storedPaused = await AsyncStorage.getItem('isDownloadPaused');
+      if (activeTask.state === 'FAILED') {
+        console.log('DownloadScreen: task state is FAILED, showing failure alert');
+        setSpeed('Failed');
+        setShowFailedAlert(true);
+      } else if (activeTask.state === 'PAUSED' || storedPaused === 'true') {
+        console.log('DownloadScreen: task is paused by user, maintaining paused state:', safeTaskId);
+        const existingProgress = activeTask.bytesTotal > 0 ? activeTask.bytesDownloaded / activeTask.bytesTotal : 0;
+        setProgress(existingProgress);
+        setDownloadedBytes(activeTask.bytesDownloaded || 0);
+        setTotalBytes(activeTask.bytesTotal || selectedDownload.byteSize);
+        setIsPaused(true);
+        setSpeed('Paused');
+      } else if (activeTask.state === 'PENDING') {
         console.log('DownloadScreen: task is pending, starting now:', safeTaskId);
         setSpeed('Starting');
         activeTask.start();
-      } else if (activeTask.state === 'PAUSED') {
-        console.log('DownloadScreen: task is paused, resuming now:', safeTaskId);
-        setSpeed('Resuming');
-        await activeTask.resume();
       } else if (activeTask.bytesTotal > 0) {
         const existingProgress = activeTask.bytesDownloaded / activeTask.bytesTotal;
         setProgress(existingProgress);
         setDownloadedBytes(activeTask.bytesDownloaded);
         setTotalBytes(activeTask.bytesTotal);
-        setSpeed(activeTask.bytesDownloaded > 0 ? 'Resuming' : 'Starting');
+        setSpeed(activeTask.bytesDownloaded > 0 ? 'Downloading' : 'Starting');
       }
 
       stallTimer = setTimeout(() => {
@@ -520,7 +646,16 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
           />
         </View>
 
-        <Text style={styles.title}>{selectedDownload?.name ?? 'AI Engine'}</Text>
+        <View style={styles.titleRow}>
+          {selectedDownload?.logo ? (
+            <Image
+              source={renderModelLogoSource(selectedDownload.logo)}
+              style={styles.modelTitleLogo}
+              resizeMode="contain"
+            />
+          ) : null}
+          <Text style={styles.title}>{selectedDownload?.name ?? 'AI Engine'}</Text>
+        </View>
         <Text style={styles.subtitle}>
           {selectedDownload?.desc ?? 'Optimized neural network for private on-device use.'}
         </Text>
@@ -528,17 +663,52 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
         <View style={styles.progressContainer}>
           <View style={styles.statsRow}>
             <Text style={styles.statsText}>{downloadedGB} GB / {totalGB} GB</Text>
-            <Text style={styles.speedText}>{speed}</Text>
+            <Text style={[styles.speedText, isPaused && styles.speedPausedText]}>
+              {isPaused ? 'Paused' : speed}
+            </Text>
           </View>
 
           <View style={styles.progressBarBg}>
-            <View style={[styles.progressBarFill, {width: `${Math.min(progress * 100, 100)}%`}]} />
+            <View style={[styles.progressBarFill, isPaused && styles.progressBarFillPaused, {width: `${Math.min(progress * 100, 100)}%`}]} />
           </View>
           
           <Text style={styles.percentageText}>
             <Text style={styles.percentageWhole}>{percentWhole}</Text>
             <Text style={styles.percentageDecimal}>.{percentDecimal}%</Text>
           </Text>
+
+          <View style={styles.cardActionsRow}>
+            <TouchableOpacity
+              style={[styles.cardActionBtn, isPaused ? styles.cardResumeBtn : styles.cardPauseBtn]}
+              activeOpacity={0.78}
+              onPress={() => {
+                if (isPaused) {
+                  setShowResumeAlert(true);
+                } else {
+                  setShowPauseAlert(true);
+                }
+              }}>
+              {isPaused ? (
+                <>
+                  <Play color="#34C759" size={15} strokeWidth={2.5} style={{marginRight: 6}} />
+                  <Text style={styles.cardResumeText}>Resume</Text>
+                </>
+              ) : (
+                <>
+                  <Pause color="#FF9500" size={15} strokeWidth={2.5} style={{marginRight: 6}} />
+                  <Text style={styles.cardPauseText}>Pause</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.cardActionBtn, styles.cardCancelBtn]}
+              activeOpacity={0.78}
+              onPress={() => setShowCancelAlert(true)}>
+              <Trash2 color="#FF453A" size={15} strokeWidth={2.5} style={{marginRight: 6}} />
+              <Text style={styles.cardCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.infoSection}>
@@ -590,9 +760,68 @@ const DownloadScreen = ({onComplete}: {onComplete: () => void}) => {
               <Text style={styles.fileLabel}>Model file</Text>
             </View>
             <Text style={styles.fileName} numberOfLines={2}>{selectedFileName}</Text>
+
+            {downloadPath ? (
+              <View style={styles.pathRow}>
+                <View style={styles.pathHeaderRow}>
+                  <Folder color="#0A84FF" size={13} strokeWidth={2.5} style={{marginRight: 6}} />
+                  <Text style={styles.pathLabel}>Storage path (pwd)</Text>
+                </View>
+                <Text style={styles.pathText} numberOfLines={3} selectable={true}>
+                  {downloadPath}
+                </Text>
+              </View>
+            ) : null}
           </View>
         </View>
       </ScrollView>
+
+      <ProfessionalAlert
+        visible={showCancelAlert}
+        title="Cancel Download?"
+        message="Are you sure you want to stop downloading this model? Download progress will be removed."
+        iconName="trash-2"
+        confirmLabel="Yes"
+        cancelLabel="No"
+        isDestructive={true}
+        onClose={() => setShowCancelAlert(false)}
+        onConfirm={handleConfirmCancel}
+      />
+
+      <ProfessionalAlert
+        visible={showPauseAlert}
+        title="Pause Download?"
+        message="Are you sure you want to pause downloading this model? You can resume anytime."
+        iconName="alert-circle"
+        confirmLabel="Yes"
+        cancelLabel="No"
+        isDestructive={false}
+        onClose={() => setShowPauseAlert(false)}
+        onConfirm={handleConfirmPause}
+      />
+
+      <ProfessionalAlert
+        visible={showResumeAlert}
+        title="Resume Download?"
+        message="Do you want to resume downloading this model?"
+        iconName="cpu"
+        confirmLabel="Yes"
+        cancelLabel="No"
+        isDestructive={false}
+        onClose={() => setShowResumeAlert(false)}
+        onConfirm={handleConfirmResume}
+      />
+
+      <ProfessionalAlert
+        visible={showFailedAlert}
+        title="Download Failed"
+        message="The model download could not be completed. Please select a model to try again."
+        iconName="alert-circle"
+        confirmLabel="Select Model"
+        isDestructive={false}
+        onClose={handleConfirmFailed}
+        onConfirm={handleConfirmFailed}
+      />
     </View>
   );
 };
@@ -627,6 +856,24 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
+  cancelDownloadBtn: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 69, 58, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 69, 58, 0.25)',
+    paddingVertical: 14,
+    borderRadius: 16,
+    marginTop: 18,
+    marginBottom: 6,
+  },
+  cancelDownloadText: {
+    color: '#FF453A',
+    fontSize: 15,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
   scroll: {
     flex: 1,
     backgroundColor: '#000000',
@@ -648,11 +895,22 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  modelTitleLogo: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    marginRight: 10,
+  },
   title: {
     fontSize: 25,
     color: '#FFFFFF',
     fontFamily: 'SF-Pro-Rounded-Bold',
-    marginBottom: 8,
     textAlign: 'center',
   },
   subtitle: {
@@ -670,11 +928,11 @@ const styles = StyleSheet.create({
     padding: 20,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: 'rgba(10, 132, 255, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.22)',
     marginBottom: 16,
-    shadowColor: '#0A84FF',
+    shadowColor: '#FFFFFF',
     shadowOffset: {width: 0, height: 4},
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.08,
     shadowRadius: 12,
     elevation: 4,
   },
@@ -697,6 +955,10 @@ const styles = StyleSheet.create({
     textShadowOffset: {width: 0, height: 0},
     textShadowRadius: 6,
   },
+  speedPausedText: {
+    color: '#FF9500',
+    textShadowColor: 'rgba(255, 149, 0, 0.4)',
+  },
   progressBarBg: {
     width: '100%',
     height: 10,
@@ -715,6 +977,53 @@ const styles = StyleSheet.create({
     shadowOffset: {width: 0, height: 0},
     shadowOpacity: 0.8,
     shadowRadius: 8,
+  },
+  progressBarFillPaused: {
+    backgroundColor: '#FF9500',
+    shadowColor: '#FF9500',
+  },
+  cardActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 18,
+    gap: 12,
+  },
+  cardActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  cardPauseBtn: {
+    backgroundColor: 'rgba(255, 149, 0, 0.1)',
+    borderColor: 'rgba(255, 149, 0, 0.28)',
+  },
+  cardResumeBtn: {
+    backgroundColor: 'rgba(52, 199, 89, 0.1)',
+    borderColor: 'rgba(52, 199, 89, 0.28)',
+  },
+  cardCancelBtn: {
+    backgroundColor: 'rgba(255, 69, 58, 0.1)',
+    borderColor: 'rgba(255, 69, 58, 0.28)',
+  },
+  cardPauseText: {
+    color: '#FF9500',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  cardResumeText: {
+    color: '#34C759',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  cardCancelText: {
+    color: '#FF453A',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
   },
   percentageText: {
     color: '#FFFFFF',
@@ -804,10 +1113,33 @@ const styles = StyleSheet.create({
     letterSpacing: 1.1,
   },
   fileName: {
-    color: '#E5E5EA',
-    fontSize: 13,
+    color: '#FFFFFF',
+    fontSize: 14,
     fontFamily: 'SF-Pro-Rounded-Semibold',
-    lineHeight: 18,
+  },
+  pathRow: {
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  pathHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  pathLabel: {
+    color: '#8E8E93',
+    fontSize: 10,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    textTransform: 'uppercase',
+    letterSpacing: 1.1,
+  },
+  pathText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Medium',
+    lineHeight: 17,
   },
   gifImage: {
     width: '100%',
