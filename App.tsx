@@ -14,6 +14,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {getSelectedInstalledModel} from './src/utils/modelInstallStatus';
 import ProfessionalAlert from './src/components/ProfessionalAlert';
 
+import {getExistingDownloadTasks} from '@kesha-antonov/react-native-background-downloader';
+
 type Screen = 'login' | 'signup' | 'home' | 'chat' | 'onboarding' | 'download' | 'modelReady';
 
 const getPostAuthScreen = async (): Promise<Screen> => {
@@ -27,6 +29,13 @@ const getPostAuthScreen = async (): Promise<Screen> => {
 
     if (installedModel) {
       return 'modelReady';
+    }
+
+    const tasks = await getExistingDownloadTasks();
+    const activeOrPausedTask = tasks.find(t => ['PENDING', 'DOWNLOADING', 'PAUSED'].includes(t.state));
+    const isPausedFlag = await AsyncStorage.getItem('isDownloadPaused');
+    if (activeOrPausedTask || isPausedFlag === 'true') {
+      return 'download';
     }
   } catch (error) {
     console.warn('App: failed to inspect completed model download:', error);
@@ -121,7 +130,10 @@ function App(): React.JSX.Element {
           />
         )}
         {screen === 'download' && (
-          <DownloadScreen onComplete={() => setScreen('modelReady')} />
+          <DownloadScreen
+            onComplete={() => setScreen('modelReady')}
+            onCancel={() => setScreen('onboarding')}
+          />
         )}
         {screen === 'modelReady' && (
           <ModelReadyScreen onComplete={() => setScreen('chat')} />

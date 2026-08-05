@@ -28,6 +28,7 @@ import {
   formatModelSize,
   getModelDownloadUrl,
   getModelTaskId,
+  renderModelLogoSource,
 } from '../data/modelCatalog';
 import type {ModelCatalogItem} from '../data/modelCatalog';
 import ProfessionalAlert from '../components/ProfessionalAlert';
@@ -52,23 +53,40 @@ const getRecommendedCatalogModel = (
   ramGB: number,
   freeDisk: number,
 ) => {
-  const recommendedMaxPriority = getRecommendedMaxPriority(ramGB);
-  // Strictly filter for models that leave ample RAM headroom (at least 2.0GB for <=5GB devices) to guarantee hyper-fast inference speed
+  // Model Recommendation Rules based on RAM Tiers:
+  // 1) <= 2GB RAM: SmolLM2 360M
+  // 2) > 2GB & <= 5GB RAM (3GB, 4GB, 5GB): Qwen 2.5 0.5B
+  // 3) > 5GB & <= 12GB RAM (6GB, 8GB, 12GB): Llama 3.2 1B
+  // 4) > 12GB RAM: Suggest according to model capabilities (highest priority fitting storage)
+
+  let targetId: string | null = null;
+
+  if (ramGB <= 2) {
+    targetId = 'bartowski/SmolLM2-360M-Instruct-GGUF';
+  } else if (ramGB <= 5) {
+    targetId = 'bartowski/Qwen2.5-0.5B-Instruct-GGUF';
+  } else if (ramGB <= 12) {
+    targetId = 'bartowski/Llama-3.2-1B-Instruct-GGUF';
+  }
+
+  if (targetId) {
+    const targetModel = catalog.find(m => m.id === targetId);
+    if (targetModel && freeDisk >= targetModel.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES) {
+      return targetModel;
+    }
+  }
+
+  // Fallback for > 12GB RAM or if specific model exceeds free disk space
   const smoothCandidates = catalog.filter(model => {
-    const requiredHeadroom = ramGB <= 5 ? 2.0 : 1.5;
-    const hasRamHeadroom = ramGB <= 1 || ramGB >= model.minRam + requiredHeadroom;
+    const hasRamHeadroom = ramGB >= model.minRam;
     const hasDiskSpace = freeDisk >= model.byteSize + RECOMMENDATION_STORAGE_RESERVE_BYTES;
     return hasRamHeadroom && hasDiskSpace;
   });
 
   return (
-    smoothCandidates
-      .filter(model => model.priority <= recommendedMaxPriority)
-      .sort((a, b) => b.priority - a.priority)[0] ??
-    smoothCandidates.sort((a, b) => a.priority - b.priority)[0] ??
-    catalog
-      .filter(model => ramGB >= model.minRam && freeDisk >= model.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES)
-      .sort((a, b) => a.priority - b.priority)[0]
+    smoothCandidates.sort((a, b) => b.priority - a.priority)[0] ??
+    catalog.find(m => m.id === 'bartowski/Llama-3.2-1B-Instruct-GGUF') ??
+    catalog[0]
   );
 };
 
@@ -163,7 +181,7 @@ const ModelCardRow = ({
         <View style={styles.modelTitleRow}>
           {model.logo && !imgError ? (
             <Image
-              source={{uri: model.logo}}
+              source={renderModelLogoSource(model.logo)}
               style={styles.modelLogo}
               resizeMode="cover"
               onError={() => setImgError(true)}
@@ -323,55 +341,24 @@ const OnboardingScreen: React.FC<Props> = ({onComplete, onModelReady}) => {
       const activeDownloadStates = ['PENDING', 'DOWNLOADING', 'PAUSED'];
       const recommendedCatalogModel = getRecommendedCatalogModel(compatibleCatalog, ramGB, freeDisk);
 
-      // Fetch realtime data from HuggingFace for the real downloadable GGUF files.
-      const fetchedModels: any[] = [];
-      for (const repo of compatibleCatalog) {
-        const activeTask = existingTasks.find(
-          task => task.id === getModelTaskId(repo) && activeDownloadStates.includes(task.state),
-        );
-        const hasActiveDownload = Boolean(activeTask);
-        const ramFits = ramGB >= repo.minRam;
-        const storageFits = freeDisk >= repo.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES;
-        const isDownloaded = await isModelFileInstalled(repo, repo.fileName);
-        const isSupported = isDownloaded || hasActiveDownload || (ramFits && storageFits);
-        const activeBytesTotal = activeTask?.bytesTotal || repo.byteSize;
-        const activePercent =
-          activeTask && activeBytesTotal > 0
-            ? Math.floor((activeTask.bytesDownloaded / activeBytesTotal) * 100)
-            : 0;
-        try {
-          const res = await fetch(`https://huggingface.co/api/models/${repo.id}`);
-          const data = await res.json();
-          fetchedModels.push({
-            id: repo.id,
-            name: repo.name,
-            logo: repo.logo,
-            description: repo.desc,
-            limitations: repo.limitations,
-            size: formatModelSize(repo.byteSize),
-            fileName: repo.fileName,
-            byteSize: repo.byteSize,
-            minRam: repo.minRam,
-            ramFits,
-            storageFits,
-            isSupported,
-            isDownloaded,
-            hasActiveDownload,
-            activeDownloadState: activeTask?.state,
-            activePercent,
-            downloadUrl: getModelDownloadUrl(repo),
-            downloads: data.downloads || 0,
-            tag: isDownloaded
-              ? 'DOWNLOADED'
-              : hasActiveDownload
-                ? 'CONTINUE DOWNLOADING'
-                : repo.id === recommendedCatalogModel?.id
-                  ? 'RECOMMENDED'
-                  : null,
-          });
-        } catch {
-          // fallback if network fails
-          fetchedModels.push({
+      // Instantly map local model information without blocking UI on network requests
+      const fetchedModels: any[] = await Promise.all(
+        compatibleCatalog.map(async repo => {
+          const activeTask = existingTasks.find(
+            task => task.id === getModelTaskId(repo) && activeDownloadStates.includes(task.state),
+          );
+          const hasActiveDownload = Boolean(activeTask);
+          const ramFits = ramGB >= repo.minRam;
+          const storageFits = freeDisk >= repo.byteSize + DOWNLOAD_STORAGE_RESERVE_BYTES;
+          const isDownloaded = await isModelFileInstalled(repo, repo.fileName);
+          const isSupported = isDownloaded || hasActiveDownload || (ramFits && storageFits);
+          const activeBytesTotal = activeTask?.bytesTotal || repo.byteSize;
+          const activePercent =
+            activeTask && activeBytesTotal > 0
+              ? Math.floor((activeTask.bytesDownloaded / activeBytesTotal) * 100)
+              : 0;
+
+          return {
             id: repo.id,
             name: repo.name,
             logo: repo.logo,
@@ -397,9 +384,9 @@ const OnboardingScreen: React.FC<Props> = ({onComplete, onModelReady}) => {
                 : repo.id === recommendedCatalogModel?.id
                   ? 'RECOMMENDED'
                   : null,
-          });
-        }
-      }
+          };
+        }),
+      );
       
       setModels(fetchedModels);
       const firstActiveDownload = fetchedModels.find(model => model.hasActiveDownload);
@@ -417,6 +404,29 @@ const OnboardingScreen: React.FC<Props> = ({onComplete, onModelReady}) => {
         if (firstDownloadable) return firstDownloadable.id;
         return '';
       });
+
+      // Enrich HuggingFace download counts asynchronously in the background
+      Promise.all(
+        compatibleCatalog.map(async repo => {
+          try {
+            const res = await fetch(`https://huggingface.co/api/models/${repo.id}`);
+            const data = await res.json();
+            return { id: repo.id, downloads: data.downloads || 0 };
+          } catch {
+            return { id: repo.id, downloads: 0 };
+          }
+        }),
+      )
+        .then(downloadCounts => {
+          const countsMap = new Map(downloadCounts.map(item => [item.id, item.downloads]));
+          setModels(currentModels =>
+            currentModels.map(m => ({
+              ...m,
+              downloads: countsMap.get(m.id) ?? m.downloads,
+            })),
+          );
+        })
+        .catch(() => {});
     } catch (e) {
       console.error(e);
     }
