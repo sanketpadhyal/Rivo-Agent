@@ -8,9 +8,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {AlertCircle, Cpu, HardDrive, LogOut, Power, Trash2} from 'lucide-react-native';
+import {AlertCircle, Cpu, Flag, HardDrive, LogOut, Power, Trash2} from 'lucide-react-native';
 
-type AlertIconName = 'alert-circle' | 'cpu' | 'hard-drive' | 'log-out' | 'trash-2' | 'power';
+type AlertIconName = 'alert-circle' | 'cpu' | 'flag' | 'hard-drive' | 'log-out' | 'trash-2' | 'power';
 
 type Props = {
   visible: boolean;
@@ -28,6 +28,7 @@ type Props = {
 const iconMap = {
   'alert-circle': AlertCircle,
   cpu: Cpu,
+  flag: Flag,
   'hard-drive': HardDrive,
   'log-out': LogOut,
   'trash-2': Trash2,

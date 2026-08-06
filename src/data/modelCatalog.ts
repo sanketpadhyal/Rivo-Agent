@@ -8,6 +8,8 @@ export type ModelCatalogItem = {
   byteSize: number;
   minRam: number;
   priority: number;
+  categoryLabel?: string;
+  categoryColor?: string;
 };
 
 const LOCAL_LOGOS: Record<string, any> = {
@@ -42,6 +44,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 270590880,
     minRam: 0,
     priority: 8,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/Qwen2.5-0.5B-Instruct-GGUF',
@@ -53,6 +57,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 397808192,
     minRam: 0,
     priority: 10,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
 
   {
@@ -65,6 +71,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 807694464,
     minRam: 2,
     priority: 20,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF',
@@ -76,6 +84,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 986048800,
     minRam: 2,
     priority: 28,
+    categoryLabel: 'Coding Expert',
+    categoryColor: '#0A84FF',
   },
   {
     id: 'bartowski/Qwen2.5-1.5B-Instruct-GGUF',
@@ -87,6 +97,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 986048768,
     minRam: 2,
     priority: 30,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/SmolLM2-1.7B-Instruct-GGUF',
@@ -98,6 +110,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 1055609824,
     minRam: 2,
     priority: 32,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF',
@@ -109,6 +123,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 1117320800,
     minRam: 2,
     priority: 35,
+    categoryLabel: 'Reasoning Engine',
+    categoryColor: '#BF5AF2',
   },
   {
     id: 'bartowski/gemma-2-2b-it-GGUF',
@@ -120,6 +136,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 1393561440,
     minRam: 3,
     priority: 40,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/Qwen2.5-Coder-3B-Instruct-GGUF',
@@ -131,6 +149,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 1929903360,
     minRam: 4,
     priority: 48,
+    categoryLabel: 'Coding Expert',
+    categoryColor: '#0A84FF',
   },
   {
     id: 'bartowski/Qwen2.5-3B-Instruct-GGUF',
@@ -142,6 +162,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 1929903264,
     minRam: 4,
     priority: 50,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
@@ -153,6 +175,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 2019377696,
     minRam: 4,
     priority: 60,
+    categoryLabel: 'Fast Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/Phi-3.5-mini-instruct-GGUF',
@@ -164,6 +188,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 2393232672,
     minRam: 6,
     priority: 70,
+    categoryLabel: 'Coding & Reasoning',
+    categoryColor: '#0A84FF',
   },
   {
     id: 'TheBloke/Mistral-7B-Instruct-v0.2-GGUF',
@@ -175,6 +201,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 3822024992,
     minRam: 6,
     priority: 80,
+    categoryLabel: 'Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/Qwen2.5-7B-Instruct-GGUF',
@@ -186,6 +214,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 4683074240,
     minRam: 6,
     priority: 85,
+    categoryLabel: 'Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF',
@@ -197,6 +227,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 4920736608,
     minRam: 8,
     priority: 88,
+    categoryLabel: 'Reasoning Engine',
+    categoryColor: '#BF5AF2',
   },
   {
     id: 'bartowski/Meta-Llama-3.1-8B-Instruct-GGUF',
@@ -208,6 +240,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 4920739232,
     minRam: 8,
     priority: 90,
+    categoryLabel: 'Direct Chat',
+    categoryColor: '#34C759',
   },
   {
     id: 'bartowski/gemma-2-9b-it-GGUF',
@@ -219,6 +253,8 @@ export const MODEL_CATALOG: ModelCatalogItem[] = [
     byteSize: 5761057728,
     minRam: 8,
     priority: 95,
+    categoryLabel: 'Direct Chat',
+    categoryColor: '#34C759',
   },
 ];
 

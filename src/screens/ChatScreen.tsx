@@ -16,6 +16,7 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  LayoutAnimation,
   Linking,
   Platform,
   Pressable,
@@ -26,15 +27,23 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  UIManager,
   useWindowDimensions,
   Vibration,
   View,
   NativeModules,
 } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
   ArrowUpRight,
   Check,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Globe,
   MoreHorizontal,
@@ -53,6 +62,14 @@ import {
   Laptop,
   Zap,
   Sliders,
+  Crown,
+  Gauge,
+  Rocket,
+  Flag,
+  Minimize2,
+  ArrowUp,
+  BrainCircuit,
+  LogOut,
 } from 'lucide-react-native';
 import Svg, {Path} from 'react-native-svg';
 
@@ -167,6 +184,13 @@ const sanitizeMessageForLlama = (text: string) => {
 
 const MENU_ITEMS = [
   {label: 'Fresh thread', isActive: true},
+];
+
+const EFFORT_PRESETS = [
+  {id: 'light', label: 'Light', tokens: 256, desc: 'Quick & direct answers • 256 tokens', IconComponent: Rocket, color: '#FFD60A'},
+  {id: 'medium', label: 'Medium', tokens: 512, desc: 'Balanced step-by-step reasoning • 512 tokens', IconComponent: Gauge, color: '#30B0C7'},
+  {id: 'high', label: 'High', tokens: 1024, desc: 'Deep logic & complex coding • 1024 tokens', IconComponent: Cpu, color: '#BF5AF2'},
+  {id: 'ultra', label: 'Ultra', tokens: 2048, desc: 'Exhaustive analysis & architecture • 2048 tokens', IconComponent: Crown, color: '#FF9F0A'},
 ];
 
 const lightHaptic = () => {
@@ -352,7 +376,9 @@ const formatThoughtTime = (ms?: number) => {
 
 const isCodeLikeResponse = (text: string) => {
   if (!text) return false;
-  return /```|#include|#define|import\s+\w+|from\s+\w+\s+import|\bint\s+\w+|\bdouble\s+\w+|\bfloat\s+\w+|\bchar\s+\w+|\bvoid\s+\w+|\bstruct\s+\w+|\bclass\s+\w+|\bprintf\(|\bstd::|\bcout\b|\bdef\s+\w+|\bfunction\s+\w+|\bpackage\s+\w+/m.test(text);
+  const contentOnly = text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+  if (!contentOnly) return false;
+  return /```[a-z]*\n[\s\S]*?\n```/i.test(contentOnly) || /```[\s\S]{12,}```/i.test(contentOnly);
 };
 
 const shouldRepairResponse = (prompt: string, response: string, aiName: string) =>
@@ -560,6 +586,147 @@ const parseMessageSegments = (text: string): MessageSegment[] => {
   return segments.length ? segments : [{type: 'text', content: cleanText}];
 };
 
+type ParsedThoughtResult = {
+  thoughtText: string;
+  contentText: string;
+  isStreamingThought: boolean;
+};
+
+const parseThoughtAndContent = (rawText: string): ParsedThoughtResult => {
+  if (!rawText) {
+    return {thoughtText: '', contentText: '', isStreamingThought: false};
+  }
+
+  const thinkMatch = rawText.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
+  if (!thinkMatch) {
+    return {thoughtText: '', contentText: rawText, isStreamingThought: false};
+  }
+
+  const thoughtText = thinkMatch[1].trim();
+  const hasClosedTag = /<\/think>/i.test(rawText);
+
+  if (hasClosedTag) {
+    const closingIdx = rawText.search(/<\/think>/i);
+    const afterClosing = closingIdx !== -1 ? rawText.slice(closingIdx + 8) : '';
+    const contentText = afterClosing.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    return {thoughtText, contentText, isStreamingThought: false};
+  }
+
+  return {thoughtText, contentText: '', isStreamingThought: true};
+};
+
+const ThoughtAccordion = React.memo(({
+  thoughtText,
+  isStreamingThought,
+  thoughtTimeMs,
+  isLive,
+  onToggle,
+}: {
+  thoughtText: string;
+  isStreamingThought: boolean;
+  thoughtTimeMs?: number;
+  isLive?: boolean;
+  onToggle?: () => void;
+}) => {
+  const [isExpanded, setIsExpanded] = useState<boolean>(Boolean(isStreamingThought));
+  const scrollViewRef = useRef<ScrollView>(null);
+  const previousThoughtLength = useRef<number>(thoughtText.length);
+  const userToggledRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!userToggledRef.current) {
+      if (isStreamingThought) {
+        setIsExpanded(true);
+      } else {
+        setIsExpanded(false);
+      }
+    }
+  }, [isStreamingThought, isLive]);
+
+  useEffect(() => {
+    if (isExpanded) {
+      if (scrollViewRef.current && thoughtText.length > previousThoughtLength.current) {
+        previousThoughtLength.current = thoughtText.length;
+        scrollViewRef.current.scrollToEnd({animated: true});
+      }
+    }
+  }, [thoughtText, isExpanded]);
+
+  const toggleExpand = useCallback(() => {
+    lightHaptic();
+    userToggledRef.current = true;
+    setIsExpanded(prev => {
+      const next = !prev;
+      onToggle?.();
+      setTimeout(() => {
+        onToggle?.();
+      }, 50);
+      setTimeout(() => {
+        onToggle?.();
+      }, 150);
+      setTimeout(() => {
+        onToggle?.();
+      }, 300);
+      return next;
+    });
+  }, [onToggle]);
+
+  const headerLabel = useMemo(() => {
+    if (isStreamingThought) {
+      return 'Thinking...';
+    }
+    if (thoughtTimeMs && thoughtTimeMs > 0) {
+      const sec = (thoughtTimeMs / 1000).toFixed(1).replace(/\.0$/, '');
+      return `Thought for ${sec}s`;
+    }
+    return 'Thought for a moment';
+  }, [isStreamingThought, thoughtTimeMs]);
+
+  if (!thoughtText.trim() && !isStreamingThought) {
+    return null;
+  }
+
+  return (
+    <View style={[styles.thoughtAccordionContainer, !isExpanded && styles.thoughtAccordionCollapsed]}>
+      <TouchableOpacity
+        activeOpacity={0.75}
+        onPress={toggleExpand}
+        style={styles.thoughtAccordionHeader}>
+        <View style={styles.thoughtAccordionHeaderLeft}>
+          <Lightbulb color={isStreamingThought ? '#FFFFFF' : '#98989E'} size={14} strokeWidth={isStreamingThought ? 2.3 : 2.2} />
+          <Text style={[styles.thoughtAccordionLabel, !isStreamingThought && {color: '#98989E'}]}>{headerLabel}</Text>
+        </View>
+        <View style={styles.thoughtAccordionHeaderRight}>
+          {isExpanded ? (
+            <ChevronUp color={isStreamingThought ? '#FFFFFF' : '#8E8E93'} size={15} strokeWidth={isStreamingThought ? 2.2 : 2} />
+          ) : (
+            <ChevronDown color={isStreamingThought ? '#FFFFFF' : '#8E8E93'} size={15} strokeWidth={isStreamingThought ? 2.2 : 2} />
+          )}
+        </View>
+      </TouchableOpacity>
+
+      {isExpanded && (
+        <View style={styles.thoughtAccordionBody}>
+          <ScrollView
+            ref={scrollViewRef}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator
+            style={styles.thoughtAccordionScroll}
+            contentContainerStyle={styles.thoughtAccordionScrollContent}
+            onContentSizeChange={() => {
+              scrollViewRef.current?.scrollToEnd({animated: true});
+              onToggle?.();
+            }}>
+            <Text selectable style={styles.thoughtAccordionText}>
+              {thoughtText || 'Analyzing context...'}
+            </Text>
+          </ScrollView>
+        </View>
+      )}
+    </View>
+  );
+});
+
 const ThinkingText = ({
   isHiding,
   label,
@@ -618,7 +785,7 @@ const ThinkingText = ({
     <Animated.View style={[styles.thinkingTextWrap, animatedStyle]}>
       <View style={styles.thinkingTitleRow}>
         {isSettingUp ? (
-          <Sliders color="#0A84FF" size={18} strokeWidth={2.2} />
+          <Sliders color="#FFFFFF" size={18} strokeWidth={2.2} />
         ) : (
           <Lightbulb color="#FFFFFF" size={19} strokeWidth={2.1} />
         )}
@@ -797,6 +964,7 @@ const MessageBubble = memo(({
   item,
   thinkingLines,
   modelLogo,
+  onToggleThought,
 }: {
   generationLabel: string;
   isLive: boolean;
@@ -804,17 +972,29 @@ const MessageBubble = memo(({
   item: ChatMessage;
   thinkingLines: string[];
   modelLogo?: any;
+  onToggleThought?: () => void;
 }) => {
   const appear = useRef(new Animated.Value(0)).current;
   const messageCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const codeCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [copiedCodeIndex, setCopiedCodeIndex] = useState<number | null>(null);
+  const [showReportAlert, setShowReportAlert] = useState<boolean>(false);
   const isUser = item.role === 'user';
   const isNotice = item.role === 'notice';
-  const messageSegments = useMemo(
-    () => (!isUser && item.text ? parseMessageSegments(item.text) : []),
+  const parsedResult = useMemo(
+    () =>
+      !isUser && item.text
+        ? parseThoughtAndContent(item.text)
+        : {thoughtText: '', contentText: item.text, isStreamingThought: false},
     [isUser, item.text],
+  );
+  const messageSegments = useMemo(
+    () =>
+      !isUser && parsedResult.contentText
+        ? parseMessageSegments(parsedResult.contentText)
+        : [],
+    [isUser, parsedResult.contentText],
   );
   const shouldShowThinking =
     isLive && thinkingLines.length > 0 && (!item.text || isThinkingHiding);
@@ -841,25 +1021,39 @@ const MessageBubble = memo(({
   );
 
   const copyMessage = useCallback(() => {
-    setClipboardText(item.text);
+    const textToCopy = isUser ? item.text : (parsedResult.contentText || item.text);
+    setClipboardText(textToCopy);
     lightHaptic();
     setCopiedMessageId(item.id);
     if (messageCopyTimer.current) {
       clearTimeout(messageCopyTimer.current);
     }
     messageCopyTimer.current = setTimeout(() => setCopiedMessageId(null), 1300);
-  }, [item.id, item.text]);
+  }, [isUser, item.id, item.text, parsedResult.contentText]);
 
   const shareMessage = useCallback(() => {
-    if (!item.text.trim()) {
+    const textToShare = isUser ? item.text : (parsedResult.contentText || item.text);
+    if (!textToShare.trim()) {
       return;
     }
 
     lightHaptic();
-    NativeShare.share({message: item.text}).catch(error => {
+    NativeShare.share({message: textToShare}).catch(error => {
       console.warn('ChatScreen: failed to share text:', error);
     });
-  }, [item.text]);
+  }, [isUser, item.text, parsedResult.contentText]);
+
+  const reportMessage = useCallback(() => {
+    lightHaptic();
+    setShowReportAlert(true);
+  }, []);
+
+  const openRivoIssuesPage = useCallback(() => {
+    const url = 'https://github.com/sanketpadhyal/Rivo-Agent-Application/issues';
+    Linking.openURL(url).catch(error => {
+      console.warn('ChatScreen: failed to open GitHub issues page:', error);
+    });
+  }, []);
 
   const copyCode = useCallback((code: string, index: number) => {
     setClipboardText(code);
@@ -892,7 +1086,7 @@ const MessageBubble = memo(({
         <View style={styles.compactDivider}>
           <View style={styles.compactDividerLine} />
           <View style={styles.compactDividerBadge}>
-            <Sparkles color="#34C759" size={13} strokeWidth={2.2} />
+            <Minimize2 color="#BF5AF2" size={13} strokeWidth={2.2} />
             <Text style={styles.compactDividerText}>{item.text}</Text>
           </View>
           <View style={styles.compactDividerLine} />
@@ -910,75 +1104,86 @@ const MessageBubble = memo(({
           )}
           <View style={[styles.messageStack, isUser && styles.userMessageStack]}>
             <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
-              {shouldShowThinking && (
+              {shouldShowThinking && !parsedResult.thoughtText && (
                 <ThinkingText
                   isHiding={isThinkingHiding}
                   label={generationLabel}
                   lines={thinkingLines}
                 />
               )}
-              {isLive && !item.text ? null : (
-                <View
-                  style={[
-                    styles.messageTextWrap,
-                    shouldShowThinking && styles.liveMessageTextWrap,
-                  ]}>
-                  {isUser ? (
-                    <Text style={styles.messageText}>{item.text}</Text>
-                  ) : (
-                    messageSegments.map((segment, index) =>
-                      segment.type === 'code' ? (
-                        <View key={`code_${index}`} style={styles.codeBlock}>
-                          <View style={styles.codeBlockHeader}>
-                            <View style={styles.codeHeaderLeft}>
-                              <Text style={styles.codeLanguage}>{segment.language}</Text>
+              {!isUser && Boolean(parsedResult.thoughtText) && (
+                <ThoughtAccordion
+                  thoughtText={parsedResult.thoughtText}
+                  isStreamingThought={parsedResult.isStreamingThought}
+                  thoughtTimeMs={item.thoughtTimeMs}
+                  isLive={isLive}
+                  onToggle={onToggleThought}
+                />
+              )}
+              {isLive && !parsedResult.contentText && !parsedResult.thoughtText ? null : (
+                (parsedResult.contentText || isUser) ? (
+                  <View
+                    style={[
+                      styles.messageTextWrap,
+                      shouldShowThinking && styles.liveMessageTextWrap,
+                    ]}>
+                    {isUser ? (
+                      <Text style={styles.messageText}>{item.text}</Text>
+                    ) : (
+                      messageSegments.map((segment, index) =>
+                        segment.type === 'code' ? (
+                          <View key={`code_${index}`} style={styles.codeBlock}>
+                            <View style={styles.codeBlockHeader}>
+                              <View style={styles.codeHeaderLeft}>
+                                <Text style={styles.codeLanguage}>{segment.language}</Text>
+                              </View>
+                              <TouchableOpacity
+                                activeOpacity={0.78}
+                                style={styles.codeCopyButtonRow}
+                                onPress={() => copyCode(segment.content, index)}>
+                                <CopyStatusIcon copied={copiedCodeIndex === index} />
+                                <Text style={styles.codeCopyText}>
+                                  {copiedCodeIndex === index ? 'Copied!' : 'Copy code'}
+                                </Text>
+                              </TouchableOpacity>
                             </View>
-                            <TouchableOpacity
-                              activeOpacity={0.78}
-                              style={styles.codeCopyButtonRow}
-                              onPress={() => copyCode(segment.content, index)}>
-                              <CopyStatusIcon copied={copiedCodeIndex === index} />
-                              <Text style={styles.codeCopyText}>
-                                {copiedCodeIndex === index ? 'Copied!' : 'Copy code'}
-                              </Text>
-                            </TouchableOpacity>
+                            <ScrollView
+                              horizontal
+                              showsHorizontalScrollIndicator={false}
+                              style={styles.codeScroll}>
+                              <View style={styles.codeEditorSurface}>
+                                {segment.content.split('\n').map((line, lineIndex) => (
+                                  <View key={`${index}_${lineIndex}`} style={styles.codeLineRow}>
+                                    <Text style={styles.codeLineNumber}>
+                                      {lineIndex + 1}
+                                    </Text>
+                                    <Text selectable style={styles.codeText}>
+                                      {line || ' '}
+                                    </Text>
+                                  </View>
+                                ))}
+                              </View>
+                            </ScrollView>
                           </View>
-                          <ScrollView
-                            horizontal
-                            showsHorizontalScrollIndicator={false}
-                            style={styles.codeScroll}>
-                            <View style={styles.codeEditorSurface}>
-                              {segment.content.split('\n').map((line, lineIndex) => (
-                                <View key={`${index}_${lineIndex}`} style={styles.codeLineRow}>
-                                  <Text style={styles.codeLineNumber}>
-                                    {lineIndex + 1}
-                                  </Text>
-                                  <Text selectable style={styles.codeText}>
-                                    {line || ' '}
-                                  </Text>
-                                </View>
-                              ))}
-                            </View>
-                          </ScrollView>
-                        </View>
-                      ) : (
-                        <FormattedText
-                          key={`text_${index}`}
-                          text={segment.content}
-                          baseStyle={[styles.messageText, styles.assistantTextSegment]}
-                        />
-                      ),
-                    )
-                  )}
-                  {!isUser && item.interrupted && (
-                    <Text style={styles.interruptedText}>Interrupted</Text>
-                  )}
-                </View>
+                        ) : (
+                          <FormattedText
+                            key={`text_${index}`}
+                            text={segment.content}
+                            baseStyle={[styles.messageText, styles.assistantTextSegment]}
+                          />
+                        ),
+                      )
+                    )}
+                    {!isUser && item.interrupted && (
+                      <Text style={styles.interruptedText}>Interrupted</Text>
+                    )}
+                  </View>
+                ) : null
               )}
             </View>
             {item.text.trim().length > 0 && !isLive && (
               <View style={!isUser && styles.assistantActionsContainer}>
-                {!isUser && Boolean(formatThoughtTime(item.thoughtTimeMs)) && (
+                {!isUser && Boolean(formatThoughtTime(item.thoughtTimeMs)) && !parsedResult.thoughtText && (
                   <Text style={styles.thoughtTimeText}>{formatThoughtTime(item.thoughtTimeMs)}</Text>
                 )}
                 <View style={[styles.messageActions, isUser && styles.userMessageActions]}>
@@ -996,6 +1201,15 @@ const MessageBubble = memo(({
                       <Share2 color="#8E8E93" size={15} strokeWidth={2.3} />
                     </TouchableOpacity>
                   )}
+                  {!isUser && (
+                    <TouchableOpacity
+                      activeOpacity={0.78}
+                      style={styles.reportActionButton}
+                      onPress={reportMessage}>
+                      <Flag color="#8E8E93" size={14} strokeWidth={2.2} />
+                      <Text style={styles.reportActionText}>Report</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
                 {!isUser && item.isTruncated && (
                   <Text style={styles.truncatedNoticeText}>
@@ -1007,6 +1221,20 @@ const MessageBubble = memo(({
           </View>
         </>
       )}
+
+      <ProfessionalAlert
+        visible={showReportAlert}
+        title="Help improve Rivo?"
+        message="Would you help Rivo Agent improve by reporting this response on GitHub? You'll be taken to the issues page."
+        confirmLabel="Yes, report"
+        cancelLabel="Not now"
+        iconName="flag"
+        onClose={() => setShowReportAlert(false)}
+        onConfirm={() => {
+          setShowReportAlert(false);
+          openRivoIssuesPage();
+        }}
+      />
     </Animated.View>
   );
 });
@@ -1082,6 +1310,45 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const [localMemoryBullets, setLocalMemoryBullets] = useState('');
   const [maxTokens, setMaxTokens] = useState(1024);
   const [isPerformanceMode, setIsPerformanceMode] = useState(false);
+  const [isEffortPopoverOpen, setIsEffortPopoverOpen] = useState(false);
+  const effortPopoverAnim = useRef(new Animated.Value(0)).current;
+
+  const toggleEffortPopover = useCallback(() => {
+    lightHaptic();
+    LayoutAnimation.configureNext({
+      duration: 550,
+      create: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+        property: LayoutAnimation.Properties.opacity,
+      },
+      update: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+        property: LayoutAnimation.Properties.scaleY,
+      },
+      delete: {
+        type: LayoutAnimation.Types.easeInEaseOut,
+        property: LayoutAnimation.Properties.opacity,
+      },
+    });
+    setIsEffortPopoverOpen(prev => {
+      const next = !prev;
+      Animated.timing(effortPopoverAnim, {
+        toValue: next ? 1 : 0,
+        duration: 480,
+        easing: Easing.bezier(0.22, 1, 0.36, 1),
+        useNativeDriver: true,
+      }).start();
+      return next;
+    });
+  }, [effortPopoverAnim]);
+
+  const currentEffortLabel = useMemo(() => {
+    if (isPerformanceMode) return 'Fast (1024)';
+    if (maxTokens <= 256) return 'Light (256)';
+    if (maxTokens <= 512) return 'Medium (512)';
+    if (maxTokens <= 1024) return 'High (1024)';
+    return 'Ultra (2048)';
+  }, [isPerformanceMode, maxTokens]);
   const [keepMessages, setKeepMessages] = useState(16);
   const [aiName, setAiName] = useState('Rivo');
   const [aiPersonality, setAiPersonality] = useState('helpful, intelligent, friendly');
@@ -1149,6 +1416,20 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     () => findCatalogModel(activeModelId, modelName),
     [activeModelId, modelName],
   );
+
+  const profileDisplayName = useMemo(() => {
+    if (localName && localName.trim()) {
+      return localName.trim();
+    }
+    const currentUser = auth().currentUser;
+    if (currentUser?.displayName && currentUser.displayName.trim()) {
+      return currentUser.displayName.trim();
+    }
+    if (currentUser?.email) {
+      return currentUser.email.split('@')[0];
+    }
+    return 'Guest';
+  }, [localName]);
 
   const hasCodingContentInThread = useMemo(() => {
     if (isCurrentThreadCodingLocked) return true;
@@ -2025,7 +2306,13 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       };
 
       const nextMessagesWithNotice = [noticeMessage, ...recentMessages];
+      userScrolledUpRef.current = false;
+      isChatAtBottomRef.current = true;
       setMessagesAndRef(nextMessagesWithNotice);
+      scrollToEnd(true, true);
+      setTimeout(() => {
+        scrollToEnd(true, true);
+      }, 100);
       setStatus('Context Compacted (Success)');
       return {messages: nextMessagesWithNotice, summary: nextSummary};
     } catch (error) {
@@ -2088,6 +2375,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const generationStartTime = Date.now();
     let firstTokenTime = 0;
+    let thinkEndTime = 0;
 
     try {
       let activeMemorySummary = memorySummary;
@@ -2113,7 +2401,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           role: 'notice',
           text: 'Compacting context...',
         };
+        userScrolledUpRef.current = false;
+        isChatAtBottomRef.current = true;
         setMessagesAndRef([...messagesRef.current, compactNotice]);
+        scrollToEnd(true, true);
 
         const compacted = await compactThreadMemory(context, baseMessages, nextUserMemory);
         const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
@@ -2124,11 +2415,17 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           role: 'notice',
           text: 'Context compacted. Continuing with recent memory.',
         };
-        setMessagesAndRef([...baseMessages, compactedNotice]);
+        userScrolledUpRef.current = false;
+        isChatAtBottomRef.current = true;
+        setMessagesAndRef([...baseMessages, compactedNotice, userMessage, assistantMessage]);
+        scrollToEnd(true, true);
         await new Promise<void>(resolve => setTimeout(() => resolve(), 180));
+      } else {
+        setMessagesAndRef([...baseMessages, userMessage, assistantMessage]);
       }
-
-      setMessagesAndRef([...baseMessages, userMessage, assistantMessage]);
+      userScrolledUpRef.current = false;
+      isChatAtBottomRef.current = true;
+      scrollToEnd(true, true);
       setStatus('Composing');
 
       const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
@@ -2151,6 +2448,16 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           ? `EMOJI RULE: Write complete, helpful text sentences first. Attach 2-3 expressive emojis (such as ${aiEmoji} ✨) to your text. NEVER output emojis alone without full text.`
           : `EMOJI RULE: Write helpful text sentences, incorporating 1-2 relevant emojis naturally (such as ${aiEmoji}).`;
 
+      const thinkingDirective = isPerformanceMode
+        ? 'REASONING EFFORT DIRECTIVE: Fast Mode. Provide quick, direct, concise responses with minimal scratchpad thinking.'
+        : maxTokens <= 256
+        ? 'REASONING EFFORT DIRECTIVE: Light Mode. Be fast, direct, and concise. Minimize unnecessary thinking steps.'
+        : maxTokens <= 512
+        ? 'REASONING EFFORT DIRECTIVE: Medium Mode. Provide balanced, structured step-by-step reasoning.'
+        : maxTokens <= 1024
+        ? 'REASONING EFFORT DIRECTIVE: High Mode. Exercise deep reasoning. Thoroughly analyze logic, edge cases, and code structure before responding.'
+        : 'REASONING EFFORT DIRECTIVE: Ultra Mode. Apply maximum analytical effort. Rigorously evaluate all possibilities, edge cases, and complex architecture.';
+
       const systemContent = isPerformanceMode
         ? [
             `STRICT ROLE & IDENTITY: You are ${currentAiName}, an offline AI assistant.`,
@@ -2160,6 +2467,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
             currentUserName ? `USER IDENTITY: The user's name is ${currentUserName}.` : '',
             currentMemoryText ? `USER FACTS & PREFERENCES: ${currentMemoryText}.` : '',
             activeMemorySummary ? `CONTEXT SUMMARY: ${activeMemorySummary}.` : '',
+            thinkingDirective,
           ].filter(Boolean).join(' ')
         : [
             `STRICT ROLE & IDENTITY: You are ${currentAiName}, a highly capable offline AI assistant companion.`,
@@ -2176,6 +2484,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               ? `KNOWN USER FACTS & PREFERENCES:\n${currentMemoryText}`
               : 'KNOWN USER FACTS & PREFERENCES: None specified yet.',
             activeMemorySummary ? `COMPACTED CONVERSATION MEMORY:\n${activeMemorySummary}` : '',
+            thinkingDirective,
           ].filter(Boolean).join('\n');
 
       const llamaMessages: RNLlamaOAICompatibleMessage[] = [
@@ -2183,10 +2492,15 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           role: 'system',
           content: systemContent,
         },
-        ...conversationSnapshot.map(item => ({
-          role: item.role as 'user' | 'assistant',
-          content: sanitizeMessageForLlama(item.text),
-        })),
+        ...conversationSnapshot.map(item => {
+          const cleanContent = item.role === 'assistant'
+            ? (parseThoughtAndContent(item.text).contentText || item.text)
+            : item.text;
+          return {
+            role: item.role as 'user' | 'assistant',
+            content: sanitizeMessageForLlama(cleanContent),
+          };
+        }),
       ];
 
       const flushStream = (force = false) => {
@@ -2236,6 +2550,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
 
         if (!firstTokenTime) {
           firstTokenTime = Date.now();
+        }
+
+        if (/<\/think>/i.test(nextStreamedText) && !thinkEndTime) {
+          thinkEndTime = Date.now();
         }
 
         setResponsePhase('thinking');
@@ -2294,7 +2612,15 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       if (trimmedFinal && !hasLettersOrDigits) {
         finalText = `Hello! ${trimmedFinal} How can I help you today?`;
       }
-      const thoughtDuration = firstTokenTime > 0 ? (firstTokenTime - generationStartTime) : (Date.now() - generationStartTime);
+
+      if (/<\/think>/i.test(finalText) && !thinkEndTime) {
+        thinkEndTime = Date.now();
+      }
+
+      const hasThoughtTags = /<think>[\s\S]*?(?:<\/think>|$)/i.test(finalText);
+      const thoughtDuration = (thinkEndTime > 0 && hasThoughtTags)
+        ? (thinkEndTime - generationStartTime)
+        : (hasThoughtTags ? (Date.now() - generationStartTime) : undefined);
       const totalDuration = Date.now() - generationStartTime;
 
       let finalAssistantMessages: ChatMessage[] = [
@@ -2739,6 +3065,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
 
   const activeGenerationLabel = responsePhase === 'setting_up' ? 'Setting up...' : 'Thinking...';
 
+  const handleToggleThought = useCallback(() => {
+    scrollToEnd(true, false);
+  }, [scrollToEnd]);
+
   const renderMessage = useCallback(
     ({item}: {item: ChatMessage}) => (
       <MessageBubble
@@ -2748,9 +3078,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         generationLabel={activeGenerationLabel}
         thinkingLines={item.id === liveAssistantId ? visibleThinkingLines : []}
         modelLogo={activeCatalogModel?.logo}
+        onToggleThought={handleToggleThought}
       />
     ),
-    [isThinkingFading, liveAssistantId, activeGenerationLabel, visibleThinkingLines, activeCatalogModel?.logo],
+    [isThinkingFading, liveAssistantId, activeGenerationLabel, visibleThinkingLines, activeCatalogModel?.logo, handleToggleThought],
   );
 
   const shouldShowEmptyOnboarding =
@@ -2797,7 +3128,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         collapsable={false}
         renderToHardwareTextureAndroid={Platform.OS === 'android' && isInfoTransitionActive}
         shouldRasterizeIOS={Platform.OS === 'ios' && isInfoTransitionActive}>
-      <View style={[styles.header, {paddingTop: insets.top + 4}]}>
+      <View style={[styles.header, {paddingTop: Platform.OS === 'android' ? Math.max(insets.top - 6, 2) : insets.top}]}>
         <TouchableOpacity
           style={styles.iconButton}
           onPressIn={dismissComposerKeyboard}
@@ -2862,9 +3193,13 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         renderItem={renderMessage}
         onContentSizeChange={handleChatContentSizeChange}
         onLayout={handleListLayoutSettled}
-        onScrollBeginDrag={() => {
-          userScrolledUpRef.current = true;
+        onScrollBeginDrag={e => {
           isChatScrollInteractingRef.current = true;
+          const {layoutMeasurement, contentOffset, contentSize} = e.nativeEvent;
+          const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
+          if (distanceFromBottom > 50) {
+            userScrolledUpRef.current = true;
+          }
           if (scrollFrameRef.current !== null) {
             cancelAnimationFrame(scrollFrameRef.current);
             scrollFrameRef.current = null;
@@ -2875,12 +3210,13 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         onScroll={e => {
           const {layoutMeasurement, contentOffset, contentSize} = e.nativeEvent;
           isContentOverflowingRef.current = contentSize.height > layoutMeasurement.height + 20;
-          const isAtBottom =
-            layoutMeasurement.height + contentOffset.y >=
-            contentSize.height - AUTO_SCROLL_RESUME_THRESHOLD;
+          const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
+          const isAtBottom = distanceFromBottom <= AUTO_SCROLL_RESUME_THRESHOLD;
           isChatAtBottomRef.current = isAtBottom;
-          if (isAtBottom && !isChatScrollInteractingRef.current) {
+          if (isAtBottom) {
             userScrolledUpRef.current = false;
+          } else if (distanceFromBottom > 70) {
+            userScrolledUpRef.current = true;
           }
         }}
         scrollEventThrottle={16}
@@ -2893,7 +3229,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         windowSize={21}
         contentContainerStyle={[
           styles.chatContent,
-          {paddingTop: insets.top + 62},
+          {paddingTop: (Platform.OS === 'android' ? Math.max(insets.top - 6, 2) : insets.top) + 48},
           shouldShowChatSkeleton
             ? styles.skeletonChatContent
             : shouldShowEmptyOnboarding && styles.emptyChatContent,
@@ -2981,42 +3317,162 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
             <Text style={styles.lockedDisclaimerText}>
               Thread locked for code optimization & peak GPU speed.
             </Text>
+            <TouchableOpacity
+              activeOpacity={0.7}
+              onPress={() => {
+                lightHaptic();
+                setIsCurrentThreadCodingLocked(false);
+              }}
+              style={{ marginTop: 6, paddingVertical: 2 }}>
+              <Text style={[styles.lockedDisclaimerText, { color: '#0A84FF', textDecorationLine: 'underline' }]}>
+                Unlock & continue in this thread
+              </Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <>
-            <View style={styles.composer}>
-              <TextInput
-                ref={inputRef}
-                value={input}
-                onChangeText={setInput}
-                placeholder="Ask Rivo offline"
-                placeholderTextColor="#B5B5B8"
-                style={styles.input}
-                editable={!isMenuOpen && !isInfoOpen}
-                showSoftInputOnFocus={!isMenuOpen && !isInfoOpen}
-                multiline
-                maxLength={2500}
-                onFocus={() => scrollToEnd(true, true)}
-                blurOnSubmit={true}
-                onSubmitEditing={() => {
-                  if (!isGenerating) {
-                    sendMessage();
-                  }
-                }}
-                enterKeyHint="send"
-              />
-              <Animated.View style={{transform: [{scale: sendScale}]}}>
-                <TouchableOpacity
-                  style={styles.sendButton}
-                  onPress={isGenerating ? stopGeneration : () => sendMessage()}
-                  activeOpacity={0.84}>
-                  {isGenerating ? (
-                    <Square color="#000000" size={13} fill="#000000" />
-                  ) : (
-                    <SendHorizontal color="#000000" size={18} strokeWidth={2.5} />
-                  )}
-                </TouchableOpacity>
-              </Animated.View>
+            <View style={[styles.unifiedComposerCard, isPerformanceMode && styles.unifiedComposerCardFast]}>
+              <TouchableOpacity
+                activeOpacity={0.82}
+                onPress={toggleEffortPopover}
+                style={[styles.composerHeaderPanel, isPerformanceMode && styles.composerHeaderPanelFast]}>
+                <View style={styles.composerHeaderLeft}>
+                  <Sliders color={isPerformanceMode ? '#34C759' : '#98989E'} size={13} strokeWidth={2.2} />
+                  <Text style={[styles.composerHeaderText, isPerformanceMode && styles.composerHeaderTextFast]}>
+                    {`${modelName || 'Rivo'} • ${currentEffortLabel}`}
+                  </Text>
+                </View>
+                {isEffortPopoverOpen ? (
+                  <ChevronUp color={isPerformanceMode ? '#34C759' : '#8E8E93'} size={14} strokeWidth={2.2} />
+                ) : (
+                  <ChevronDown color={isPerformanceMode ? '#34C759' : '#8E8E93'} size={14} strokeWidth={2.2} />
+                )}
+              </TouchableOpacity>
+
+              {isEffortPopoverOpen && (
+                <Animated.View
+                  style={[
+                    styles.inlineEffortPanel,
+                    {
+                      opacity: effortPopoverAnim,
+                      transform: [
+                        {
+                          translateY: effortPopoverAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [-6, 0],
+                          }),
+                        },
+                      ],
+                    },
+                  ]}>
+                  <View style={styles.popoverHeaderRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Sliders color="#0A84FF" size={14} strokeWidth={2.2} />
+                      <Text style={styles.popoverTitle}>Reasoning Effort & Tokens</Text>
+                    </View>
+                    <Text style={styles.popoverSubtitle}>Rivo Engine</Text>
+                  </View>
+
+                  <View style={styles.popoverMenuGroup}>
+                    {EFFORT_PRESETS.map(preset => {
+                      const isSelected = !isPerformanceMode && maxTokens === preset.tokens;
+                      return (
+                        <TouchableOpacity
+                          key={preset.label}
+                          activeOpacity={0.78}
+                          style={[
+                            styles.popoverMenuItem,
+                            isSelected && styles.popoverMenuItemSelected,
+                          ]}
+                          onPress={() => {
+                            lightHaptic();
+                            setMaxTokens(preset.tokens);
+                            if (isPerformanceMode) {
+                              setIsPerformanceMode(false);
+                            }
+                          }}>
+                          <View style={styles.popoverMenuLeft}>
+                            <View style={[styles.popoverIconBox, isSelected && { backgroundColor: `${preset.color}1E` }]}>
+                              <preset.IconComponent
+                                color={isSelected ? preset.color : '#8E8E93'}
+                                size={14}
+                                strokeWidth={2.2}
+                              />
+                            </View>
+                            <View style={{flex: 1}}>
+                              <Text
+                                style={[
+                                  styles.popoverMenuLabel,
+                                  isSelected && styles.popoverMenuLabelSelected,
+                                ]}>
+                                {preset.label}
+                              </Text>
+                              <Text style={styles.popoverMenuDesc}>{preset.desc}</Text>
+                            </View>
+                          </View>
+                          {isSelected && <Check color="#0A84FF" size={16} strokeWidth={2.8} style={{ marginRight: 2 }} />}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <View style={styles.popoverFooterRow}>
+                    <TouchableOpacity
+                      activeOpacity={0.8}
+                      style={styles.popoverFastRow}
+                      onPress={() => {
+                        lightHaptic();
+                        setIsPerformanceMode(prev => !prev);
+                      }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                        <Zap color={isPerformanceMode ? '#34C759' : '#8E8E93'} size={15} strokeWidth={2.2} />
+                        <View style={{flex: 1}}>
+                          <Text style={styles.popoverFastTitle}>Fast Chat Mode</Text>
+                          <Text style={styles.popoverFastDesc}>Faster generation with 1024 token limit</Text>
+                        </View>
+                      </View>
+                      <View style={[styles.miniSwitch, isPerformanceMode && styles.miniSwitchActive]}>
+                        <View style={[styles.miniSwitchThumb, isPerformanceMode && styles.miniSwitchThumbActive]} />
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                </Animated.View>
+              )}
+
+              <View style={styles.composerInnerRow}>
+                <TextInput
+                  ref={inputRef}
+                  value={input}
+                  onChangeText={setInput}
+                  placeholder="Ask Rivo offline"
+                  placeholderTextColor="#B5B5B8"
+                  style={styles.input}
+                  editable={!isMenuOpen && !isInfoOpen}
+                  showSoftInputOnFocus={!isMenuOpen && !isInfoOpen}
+                  multiline
+                  maxLength={2500}
+                  onFocus={() => scrollToEnd(true, true)}
+                  blurOnSubmit={true}
+                  onSubmitEditing={() => {
+                    if (!isGenerating) {
+                      sendMessage();
+                    }
+                  }}
+                  enterKeyHint="send"
+                />
+                <Animated.View style={{transform: [{scale: sendScale}]}}>
+                  <TouchableOpacity
+                    style={styles.sendButton}
+                    onPress={isGenerating ? stopGeneration : () => sendMessage()}
+                    activeOpacity={0.84}>
+                    {isGenerating ? (
+                      <Square color="#000000" size={12} fill="#000000" />
+                    ) : (
+                      <ArrowUp color="#000000" size={18} strokeWidth={2.8} />
+                    )}
+                  </TouchableOpacity>
+                </Animated.View>
+              </View>
             </View>
             <Text style={styles.disclaimerText}>Local models can make mistakes. Check twice.</Text>
           </>
@@ -3118,12 +3574,23 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           style={styles.profileRow}
           onPress={() => setShowLogoutConfirmAlert(true)}
           activeOpacity={0.78}>
-          <View style={styles.profileAvatar}>
-            <Text style={styles.profileInitials}>G</Text>
+          <View style={styles.profileIconWrap}>
+            {activeCatalogModel?.logo ? (
+              <Image
+                source={renderModelLogoSource(activeCatalogModel.logo)}
+                style={styles.profileModelLogo}
+                resizeMode="contain"
+              />
+            ) : (
+              <BrainCircuit color="#34C759" size={24} strokeWidth={2.2} />
+            )}
           </View>
           <View style={styles.profileCopy}>
-            <Text style={styles.profileName}>Guest</Text>
+            <Text style={styles.profileName}>{profileDisplayName}</Text>
             <Text style={styles.profilePlan}>Device-only memory</Text>
+          </View>
+          <View style={styles.logoutIconBox}>
+            <LogOut color="#FFFFFF" size={18} strokeWidth={2.2} />
           </View>
         </TouchableOpacity>
       </Animated.View>
@@ -3275,7 +3742,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               </TouchableOpacity>
 
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, marginBottom: 8 }}>
-                <Text style={[styles.inputLabel, { marginVertical: 0 }]}>Max reply length</Text>
+                <Text style={[styles.inputLabel, { marginVertical: 0 }]}>Max reply tokens</Text>
                 {isPerformanceMode && (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <Lock color="#B7FF25" size={10} strokeWidth={2.5} />
@@ -3306,14 +3773,14 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
                         }}>
                         <Text style={[styles.segmentText, isSelected && styles.segmentTextActive]}>
                           {tokens === 1024 && isPerformanceMode
-                            ? '1024 (locked)'
+                            ? '1024 Tokens (locked)'
                             : tokens === 256
-                            ? '256 — Lite'
+                            ? '256 Tokens — Light'
                             : tokens === 512
-                            ? '512 — Standard'
+                            ? '512 Tokens — Medium'
                             : tokens === 1024
-                            ? '1024 — Long'
-                            : '2048 — Max'}
+                            ? '1024 Tokens — High'
+                            : '2048 Tokens — Ultra'}
                         </Text>
                         {isRecommended && (
                           <View style={[styles.recBadge, isSelected && styles.recBadgeActive]}>
@@ -3592,8 +4059,9 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     zIndex: 20,
-    minHeight: 54,
-    paddingHorizontal: 18,
+    minHeight: 46,
+    paddingHorizontal: 14,
+    paddingBottom: 4,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(4, 4, 6, 0.94)',
@@ -4250,6 +4718,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 2,
   },
+  reportActionButton: {
+    height: 30,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    gap: 4,
+    marginTop: 2,
+  },
+  reportActionText: {
+    color: '#8E8E93',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Medium',
+  },
   copyIconStage: {
     width: 18,
     height: 18,
@@ -4266,6 +4748,59 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
     overflow: 'hidden',
     paddingVertical: 2,
+  },
+  thoughtAccordionContainer: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.035)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 12,
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  thoughtAccordionCollapsed: {
+    alignSelf: 'flex-start',
+    width: undefined,
+  },
+  thoughtAccordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  thoughtAccordionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  thoughtAccordionLabel: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    letterSpacing: 0.2,
+  },
+  thoughtAccordionHeaderRight: {
+    padding: 2,
+  },
+  thoughtAccordionBody: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  thoughtAccordionScroll: {
+    maxHeight: 145,
+  },
+  thoughtAccordionScrollContent: {
+    paddingBottom: 2,
+  },
+  thoughtAccordionText: {
+    color: '#A1A1A6',
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   thinkingTitleRow: {
     flexDirection: 'row',
@@ -4314,16 +4849,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#121316',
+    backgroundColor: 'rgba(191, 90, 242, 0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(52, 199, 89, 0.3)',
+    borderColor: 'rgba(191, 90, 242, 0.35)',
     borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 5,
     marginHorizontal: 10,
   },
   compactDividerText: {
-    color: '#34C759',
+    color: '#BF5AF2',
     fontSize: 12,
     fontFamily: 'SF-Pro-Rounded-Semibold',
     letterSpacing: 0.2,
@@ -4388,9 +4923,9 @@ const styles = StyleSheet.create({
     textAlignVertical: 'center',
   },
   sendButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
@@ -4570,21 +5105,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginTop: 8,
   },
-  profileAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#3F5342',
-    borderWidth: 1,
-    borderColor: '#5A725D',
+  profileIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
-  profileInitials: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontFamily: 'SF-Pro-Rounded-Bold',
+  profileModelLogo: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
   },
   profileCopy: {
     flex: 1,
@@ -4601,6 +5137,15 @@ const styles = StyleSheet.create({
     fontFamily: 'SF-Pro-Rounded-Medium',
     lineHeight: 16,
     marginTop: 2,
+  },
+  logoutIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
   },
   profileTag: {
     height: 24,
@@ -4899,6 +5444,244 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'SF-Pro-Rounded-Semibold',
     marginVertical: 2,
+  },
+  quickBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    paddingHorizontal: 4,
+    zIndex: 10,
+  },
+  quickBarChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.09)',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  quickBarChipText: {
+    color: '#D1D1D6',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    letterSpacing: 0.1,
+  },
+  quickBarFastToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  quickBarFastToggleActive: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#FFFFFF',
+  },
+  quickBarFastToggleText: {
+    color: '#8E8E93',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  quickBarFastToggleTextActive: {
+    color: '#000000',
+  },
+  popoverFullOverlay: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  popoverFullBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'transparent',
+  },
+  effortPopoverCard: {
+    position: 'absolute',
+    bottom: 82,
+    left: 12,
+    right: 12,
+    backgroundColor: '#1C1C1E',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 16,
+    padding: 10,
+    zIndex: 999,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  popoverHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
+    marginBottom: 6,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  popoverTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  popoverSubtitle: {
+    color: '#8E8E93',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    letterSpacing: 0.2,
+  },
+  popoverMenuGroup: {
+    gap: 3,
+  },
+  popoverMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 12,
+    backgroundColor: 'transparent',
+  },
+  popoverMenuItemSelected: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  popoverMenuLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    paddingRight: 6,
+  },
+  popoverIconBox: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  popoverMenuLabel: {
+    color: '#E5E5EA',
+    fontSize: 13,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+  },
+  popoverMenuLabelSelected: {
+    color: '#FFFFFF',
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  popoverMenuDesc: {
+    color: '#8E8E93',
+    fontSize: 10.5,
+    fontFamily: 'SF-Pro-Rounded-Medium',
+    marginTop: 1,
+  },
+  popoverFooterRow: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  popoverFastRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  popoverFastTitle: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+  },
+  popoverFastDesc: {
+    color: '#8E8E93',
+    fontSize: 10,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+  },
+  miniSwitch: {
+    width: 34,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: '#3A3A3C',
+    padding: 2,
+    justifyContent: 'center',
+  },
+  miniSwitchActive: {
+    backgroundColor: '#34C759',
+  },
+  miniSwitchThumb: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#FFFFFF',
+  },
+  miniSwitchThumbActive: {
+    transform: [{ translateX: 16 }],
+  },
+  unifiedComposerCard: {
+    backgroundColor: '#1C1C1E',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  unifiedComposerCardFast: {
+    borderColor: '#34C759',
+  },
+  inlineEffortPanel: {
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  composerHeaderPanel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  composerHeaderPanelFast: {
+    backgroundColor: 'rgba(52, 199, 89, 0.08)',
+    borderBottomColor: 'rgba(52, 199, 89, 0.25)',
+  },
+  composerHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  composerHeaderText: {
+    color: '#D1D1D6',
+    fontSize: 12.5,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    letterSpacing: 0.1,
+  },
+  composerHeaderTextFast: {
+    color: '#34C759',
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  composerInnerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 16,
+    paddingRight: 6,
+    paddingVertical: 4,
+    minHeight: 46,
   },
 });
 

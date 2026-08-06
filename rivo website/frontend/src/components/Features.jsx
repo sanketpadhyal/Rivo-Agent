@@ -1,8 +1,13 @@
 import React from 'react';
-import { MessageSquare, WifiOff, Settings, Database, Cpu, Lock } from 'lucide-react';
+import { MessageSquare, WifiOff, Settings, Lock, Sliders, BrainCircuit } from 'lucide-react';
 
 const Features = () => {
   const featureList = [
+    {
+      Icon: Sliders,
+      title: 'Inline Reasoning Controls',
+      desc: 'Seamlessly expand reasoning effort levels (Light, Medium, High, Ultra) and Fast Chat mode with buttery 550ms animations inside the composer.'
+    },
     {
       Icon: WifiOff,
       title: 'Runs 100% Offline',
@@ -11,27 +16,22 @@ const Features = () => {
     {
       Icon: Lock,
       title: 'Zero Data Leaks',
-      desc: 'Your chat history, preferences, and assistant memories stay strictly stored inside secure local AsyncStorage.'
+      desc: 'Your chat history, preferences, user profile name, and assistant memories stay strictly stored inside secure local AsyncStorage.'
+    },
+    {
+      Icon: BrainCircuit,
+      title: 'Vector Category Badges',
+      desc: 'Visual indicators map reasoning engines, coding experts, and direct chat models for instant hardware selection.'
     },
     {
       Icon: Settings,
       title: 'Neural Panel Tuning',
-      desc: 'Customize the AI name, core personality parameters, emoji count, output limits, and sliding window context sizes.'
-    },
-    {
-      Icon: Database,
-      title: 'Storage Management',
-      desc: 'Delete models and purge cache instantly with double-confirmed security safeguards, restoring storage instantly.'
-    },
-    {
-      Icon: Cpu,
-      title: 'Adaptive Performance',
-      desc: 'Enables a lighter RAM footprint mode designed dynamically based on your specific phone specs to prevent crashes.'
+      desc: 'Customize the AI name, core personality parameters, emoji count, token limits, and sliding window context sizes.'
     },
     {
       Icon: MessageSquare,
       title: 'Fluid Streaming',
-      desc: 'Buttery-smooth text streaming equipped with user-aware auto-scrolling, code rendering, and message copying.'
+      desc: 'Buttery-smooth text streaming equipped with user-aware auto-scrolling, Markdown code rendering, and live thought timers.'
     }
   ];
 

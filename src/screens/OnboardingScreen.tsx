@@ -22,7 +22,7 @@ const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpaci
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DeviceInfo from 'react-native-device-info';
-import { Smartphone, HardDriveDownload, Cpu, HardDrive, Info, CloudDownload, Brain, Trash2, AlertTriangle, Zap } from 'lucide-react-native';
+import { Smartphone, HardDriveDownload, Cpu, HardDrive, Info, CloudDownload, Brain, Trash2, AlertTriangle, Zap, BrainCircuit, Code } from 'lucide-react-native';
 import {
   MODEL_CATALOG,
   formatModelSize,
@@ -226,6 +226,20 @@ const ModelCardRow = ({
           </View>
         ) : null}
       </View>
+      {model.categoryLabel ? (
+        <View style={[styles.categoryBadge, { backgroundColor: `${model.categoryColor || '#0A84FF'}1E`, borderColor: `${model.categoryColor || '#0A84FF'}45` }]}>
+          {model.categoryLabel.includes('Reasoning') ? (
+            <BrainCircuit color={model.categoryColor || '#BF5AF2'} size={11} strokeWidth={2.3} />
+          ) : model.categoryLabel.includes('Coding') ? (
+            <Code color={model.categoryColor || '#0A84FF'} size={11} strokeWidth={2.3} />
+          ) : (
+            <Zap color={model.categoryColor || '#34C759'} size={11} strokeWidth={2.3} />
+          )}
+          <Text style={[styles.categoryBadgeText, { color: model.categoryColor || '#0A84FF' }]}>
+            {model.categoryLabel}
+          </Text>
+        </View>
+      ) : null}
       <Text style={styles.modelDesc}>{model.description}</Text>
       {model.limitations ? (
         <View style={styles.limitationContainer}>
@@ -364,6 +378,8 @@ const OnboardingScreen: React.FC<Props> = ({onComplete, onModelReady}) => {
             logo: repo.logo,
             description: repo.desc,
             limitations: repo.limitations,
+            categoryLabel: repo.categoryLabel,
+            categoryColor: repo.categoryColor,
             size: formatModelSize(repo.byteSize),
             fileName: repo.fileName,
             byteSize: repo.byteSize,
@@ -1215,6 +1231,23 @@ const styles = StyleSheet.create({
   limitationLabel: {
     color: '#FF9F0A',
     fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  categoryBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginTop: 5,
+    marginBottom: 5,
+  },
+  categoryBadgeText: {
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    letterSpacing: 0.2,
   },
 });
 
