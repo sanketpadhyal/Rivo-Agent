@@ -15,7 +15,7 @@ const Hero = () => {
           </p>
           <div className="hero-actions">
             <a
-              href="https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.0.0/rivo-agent-v2.apk"
+              href="https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.1.0/rivo-agent-v2.1.0.apk"
               className="hero-primary-btn"
             >
               <Download size={20} strokeWidth={2.5} />

@@ -11,7 +11,7 @@ import {
   Easing,
   TouchableOpacity,
 } from 'react-native';
-import { FileCode, Activity, Cpu, ShieldCheck, FileText, Trash2, X, Pause, Play, Folder } from 'lucide-react-native';
+import { FileCode, Activity, Cpu, ShieldCheck, FileText, Trash2, X, Pause, Play, Folder, Zap, BrainCircuit, Code } from 'lucide-react-native';
 import ProfessionalAlert from '../components/ProfessionalAlert';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
@@ -38,6 +38,8 @@ type SelectedDownload = {
   byteSize: number;
   minRam: number;
   downloadUrl: string;
+  categoryLabel?: string;
+  categoryColor?: string;
 };
 
 const getAndroidVersion = () =>
@@ -243,6 +245,8 @@ const DownloadScreen = ({
         name: catalogModel.name,
         desc: catalogModel.desc,
         logo: catalogModel.logo,
+        categoryLabel: catalogModel.categoryLabel,
+        categoryColor: catalogModel.categoryColor,
         fileName,
         byteSize: Number(storedSizeBytes) || catalogModel.byteSize,
         minRam: catalogModel.minRam,
@@ -656,6 +660,20 @@ const DownloadScreen = ({
           ) : null}
           <Text style={styles.title}>{selectedDownload?.name ?? 'AI Engine'}</Text>
         </View>
+        {selectedDownload?.categoryLabel ? (
+          <View style={[styles.categoryBadge, { backgroundColor: `${selectedDownload.categoryColor || '#0A84FF'}1E`, borderColor: `${selectedDownload.categoryColor || '#0A84FF'}45` }]}>
+            {selectedDownload.categoryLabel.includes('Reasoning') ? (
+              <BrainCircuit color={selectedDownload.categoryColor || '#BF5AF2'} size={12} strokeWidth={2.3} />
+            ) : selectedDownload.categoryLabel.includes('Coding') ? (
+              <Code color={selectedDownload.categoryColor || '#0A84FF'} size={12} strokeWidth={2.3} />
+            ) : (
+              <Zap color={selectedDownload.categoryColor || '#34C759'} size={12} strokeWidth={2.3} />
+            )}
+            <Text style={[styles.categoryBadgeText, { color: selectedDownload.categoryColor || '#0A84FF' }]}>
+              {selectedDownload.categoryLabel}
+            </Text>
+          </View>
+        ) : null}
         <Text style={styles.subtitle}>
           {selectedDownload?.desc ?? 'Optimized neural network for private on-device use.'}
         </Text>
@@ -1144,6 +1162,23 @@ const styles = StyleSheet.create({
   gifImage: {
     width: '100%',
     height: '100%',
+  },
+  categoryBadge: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 3.5,
+    borderRadius: 7,
+    borderWidth: 1,
+    marginTop: 6,
+    marginBottom: 6,
+  },
+  categoryBadgeText: {
+    fontSize: 11.5,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    letterSpacing: 0.2,
   },
 });
 
