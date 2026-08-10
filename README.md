@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.0.0/rivo-agent-v2.apk"><strong>Download Android APK</strong></a>
+  <a href="https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v3.0.0/rivo-agent-v3.apk"><strong>Download Android APK</strong></a>
   &nbsp;&middot;&nbsp;
   <a href="../../releases">All Releases</a>
   &nbsp;&middot;&nbsp;
@@ -20,7 +20,7 @@
 
 <p align="center">
   <a href="../../releases/latest">
-    <img src="https://img.shields.io/badge/Rivo_Agent-v2.0.0-111111?style=for-the-badge" alt="Rivo Agent v2.0.0" />
+    <img src="https://img.shields.io/badge/Rivo_Agent-v3.0.0-111111?style=for-the-badge" alt="Rivo Agent v3.0.0" />
   </a>
   <a href="../../releases/latest">
     <img src="https://img.shields.io/badge/App-Download_Latest-00A86B?style=for-the-badge" alt="Download the latest Rivo Agent app" />
@@ -84,7 +84,7 @@ Rivo uses Firebase Auth and Google Sign-In for app access. The assistant convers
 
 The latest documented Android build is available here:
 
-[Download Rivo Agent v2.0.0 APK](https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v2.0.0/rivo-agent-v2.apk)
+[Download Rivo Agent v3.0.0 APK](https://github.com/sanketpadhyal/Rivo-Agent-Application/releases/download/v3.0.0/rivo-agent-v3.apk)
 
 1. Download the APK on an Android device.
 2. Open the downloaded `.apk` file.

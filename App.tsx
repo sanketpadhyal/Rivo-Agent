@@ -131,15 +131,38 @@ function App(): React.JSX.Element {
         )}
         {screen === 'download' && (
           <DownloadScreen
-            onComplete={() => setScreen('modelReady')}
-            onCancel={() => setScreen('onboarding')}
+            onComplete={async () => {
+              const isVisionFlag = await AsyncStorage.getItem('isVisionDownload');
+              const isVisionComplete = await AsyncStorage.getItem('visionModelDownloadComplete');
+              if (isVisionFlag === 'true' || isVisionComplete === 'true') {
+                await AsyncStorage.multiSet([
+                  ['visionModelDownloadComplete', 'true'],
+                  ['isVisionDownload', 'false'],
+                ]);
+                setScreen('chat');
+              } else {
+                setScreen('modelReady');
+              }
+            }}
+            onCancel={async () => {
+              const isVisionFlag = await AsyncStorage.getItem('isVisionDownload');
+              await AsyncStorage.removeItem('isVisionDownload');
+              if (isVisionFlag === 'true') {
+                setScreen('chat');
+              } else {
+                setScreen('onboarding');
+              }
+            }}
           />
         )}
         {screen === 'modelReady' && (
           <ModelReadyScreen onComplete={() => setScreen('chat')} />
         )}
         {screen === 'chat' && (
-          <ChatScreen onBack={() => setShowExitAlert(true)} />
+          <ChatScreen
+            onBack={() => setShowExitAlert(true)}
+            onOpenDownload={() => setScreen('download')}
+          />
         )}
         <ProfessionalAlert
           visible={showExitAlert}

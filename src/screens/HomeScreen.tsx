@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   Linking,
   BackHandler,
+  Platform,
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Colors} from '../theme/colors';
@@ -359,7 +360,7 @@ const HomeScreen: React.FC<Props> = ({onGetStarted, onBack}) => {
           style={[
             styles.infoPanel,
             {
-              paddingTop: insets.top + 12,
+              paddingTop: Platform.OS === 'android' ? Math.max(insets.top - 6, 2) : insets.top,
               paddingBottom: insets.bottom + 16,
               transform: [{translateX: infoTranslateX}],
             },
@@ -372,8 +373,9 @@ const HomeScreen: React.FC<Props> = ({onGetStarted, onBack}) => {
               <Image source={require('../assets/back.png')} style={styles.infoBackIcon} resizeMode="contain" />
             </TouchableOpacity>
             <View style={styles.infoHeaderCopy}>
-              <Text style={styles.infoEyebrow}>ABOUT RIVO</Text>
-              <Text style={styles.infoTitle}>Local AI details</Text>
+              <Text style={styles.infoTitle}>
+                Local <Text style={{color: '#D4FF00'}}>AI details</Text>
+              </Text>
             </View>
           </View>
 
@@ -689,11 +691,11 @@ const styles = StyleSheet.create({
     elevation: 25,
   },
   infoHeader: {
-    minHeight: 58,
+    minHeight: 48,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 18,
+    marginTop: 0,
   },
   infoBackButton: {
     width: 36,
