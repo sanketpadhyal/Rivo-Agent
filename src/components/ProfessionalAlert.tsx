@@ -8,14 +8,15 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {AlertCircle, Cpu, Flag, HardDrive, LogOut, Power, Trash2} from 'lucide-react-native';
+import {AlertCircle, Cpu, Flag, HardDrive, LogOut, Power, Trash2, Eye} from 'lucide-react-native';
 
-type AlertIconName = 'alert-circle' | 'cpu' | 'flag' | 'hard-drive' | 'log-out' | 'trash-2' | 'power';
+type AlertIconName = 'alert-circle' | 'cpu' | 'flag' | 'hard-drive' | 'log-out' | 'trash-2' | 'power' | 'eye';
 
 type Props = {
   visible: boolean;
   title: string;
   message: string;
+  boldSuffix?: string;
   actionLabel?: string;
   onClose: () => void;
   onConfirm?: () => void;
@@ -33,12 +34,14 @@ const iconMap = {
   'log-out': LogOut,
   'trash-2': Trash2,
   power: Power,
+  eye: Eye,
 };
 
 const ProfessionalAlert: React.FC<Props> = ({
   visible,
   title,
   message,
+  boldSuffix,
   actionLabel = 'Got it',
   onClose,
   onConfirm,
@@ -115,7 +118,10 @@ const ProfessionalAlert: React.FC<Props> = ({
           </View>
 
           <Text style={styles.title}>{title}</Text>
-          <Text style={styles.message}>{message}</Text>
+          <Text style={styles.message}>
+            {message}
+            {boldSuffix ? <Text style={styles.messageBold}>{' '}{boldSuffix}</Text> : null}
+          </Text>
 
           {hasConfirm ? (
             <View style={styles.rowActions}>
@@ -194,6 +200,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     marginBottom: 22,
+  },
+  messageBold: {
+    color: '#FFFFFF',
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    fontSize: 15,
   },
   action: {
     minHeight: 52,

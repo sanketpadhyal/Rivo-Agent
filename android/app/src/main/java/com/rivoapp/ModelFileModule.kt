@@ -7,6 +7,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 
 class ModelFileModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -115,6 +116,46 @@ class ModelFileModule(private val reactContext: ReactApplicationContext) :
       promise.resolve(true)
     } catch (error: Exception) {
       promise.reject("MODEL_FILE_COPY_FAILED", error)
+    }
+  }
+
+  /**
+   * Android's system photo picker commonly returns a content:// URI. The
+   * native llama.cpp runtime only accepts a real filesystem path, so copy the
+   * selected image into the app cache before vision inference.
+   */
+  @ReactMethod
+  fun copyContentUriToCache(uri: String, fileName: String, promise: Promise) {
+    try {
+      val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_")
+      val cacheDirectory = File(reactContext.cacheDir, "vision-inputs")
+      if (!cacheDirectory.exists() && !cacheDirectory.mkdirs()) {
+        promise.reject("VISION_IMAGE_CACHE_DIRECTORY_FAILED", "Could not create vision image cache directory")
+        return
+      }
+
+      val destination = File(cacheDirectory, "${System.currentTimeMillis()}_$safeName")
+      val source = reactContext.contentResolver.openInputStream(android.net.Uri.parse(uri))
+      if (source == null) {
+        promise.reject("VISION_IMAGE_READ_FAILED", "Could not read selected image")
+        return
+      }
+
+      source.use { input ->
+        FileOutputStream(destination).use { output ->
+          input.copyTo(output, bufferSize = 256 * 1024)
+        }
+      }
+
+      if (!destination.exists() || destination.length() == 0L) {
+        destination.delete()
+        promise.reject("VISION_IMAGE_COPY_FAILED", "Selected image was empty")
+        return
+      }
+
+      promise.resolve(destination.absolutePath)
+    } catch (error: Exception) {
+      promise.reject("VISION_IMAGE_COPY_FAILED", error.message, error)
     }
   }
 

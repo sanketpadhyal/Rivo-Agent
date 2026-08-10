@@ -18,6 +18,7 @@ import {
   KeyboardAvoidingView,
   LayoutAnimation,
   Linking,
+  PermissionsAndroid,
   Platform,
   Pressable,
   ScrollView,
@@ -43,6 +44,8 @@ import {
   ArrowUpRight,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Copy,
   Globe,
@@ -70,8 +73,25 @@ import {
   ArrowUp,
   BrainCircuit,
   LogOut,
+  Palette,
+  Plus,
+  X,
+  Eye,
+  MessageCircle,
+  Trash2,
 } from 'lucide-react-native';
 import Svg, {Path} from 'react-native-svg';
+import {launchImageLibrary} from 'react-native-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import auth from '@react-native-firebase/auth';
+import DeviceInfo from 'react-native-device-info';
+import {initLlama, LlamaContext, RNLlamaOAICompatibleMessage} from 'llama.rn';
+import {getModelFilePath, getSelectedInstalledModel, getSelectedInstalledVisionModel, deleteModelFile, getVisionImageFilePath, hasInstalledVisionModel, seedVisionDownload, QWEN_VISION_MODEL} from '../utils/modelInstallStatus';
+import {findCatalogModel, renderModelLogoSource} from '../data/modelCatalog';
+import {formatVisionModelSize} from '../data/visionModelCatalog';
+import {getExistingDownloadTasks} from '@kesha-antonov/react-native-background-downloader';
+import ProfessionalAlert from '../components/ProfessionalAlert';
+import Loader from '../components/Loader';
 
 const GithubIcon: React.FC<{color?: string; size?: number}> = ({color = '#0A84FF', size = 15}) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
@@ -79,17 +99,281 @@ const GithubIcon: React.FC<{color?: string; size?: number}> = ({color = '#0A84FF
     <Path d="M9 18c-4.51 2-5-2-7-2" />
   </Svg>
 );
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import auth from '@react-native-firebase/auth';
-import DeviceInfo from 'react-native-device-info';
-import {initLlama, LlamaContext, RNLlamaOAICompatibleMessage} from 'llama.rn';
-import {getModelFilePath, getSelectedInstalledModel, deleteModelFile} from '../utils/modelInstallStatus';
-import {findCatalogModel, renderModelLogoSource} from '../data/modelCatalog';
-import {getExistingDownloadTasks} from '@kesha-antonov/react-native-background-downloader';
-import ProfessionalAlert from '../components/ProfessionalAlert';
+
+const requestPhotoPermissions = async () => {
+  if (Platform.OS !== 'android') return true;
+  try {
+    const apiLevel = typeof Platform.Version === 'number' ? Platform.Version : Number(Platform.Version);
+    const permission = apiLevel >= 33
+      ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
+      : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+    
+    if (!permission) return true;
+    const hasPermission = await PermissionsAndroid.check(permission);
+    if (hasPermission) return true;
+
+    const granted = await PermissionsAndroid.request(permission, {
+      title: 'Photo Access Needed',
+      message: 'Rivo needs permission to access your photo gallery so you can select images to analyze with Vision.',
+      buttonPositive: 'Allow',
+      buttonNegative: 'Cancel',
+    });
+    return granted === PermissionsAndroid.RESULTS.GRANTED;
+  } catch (err) {
+    console.warn('ChatScreen: photo permission request error:', err);
+    return true;
+  }
+};
+
+const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return 'Image attached';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+};
+
+const sanitizeVisionOutput = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/<\|box_start\|>/g, '')
+    .replace(/<\|box_end\|>/g, '')
+    .replace(/<\|ref_start\|>/g, '')
+    .replace(/<\|ref_end\|>/g, '')
+    .replace(/<\|[^|]+\|>/g, '')
+    .replace(/\(\d{1,4}\s*,\s*\d{1,4}\)\s*,?\s*/g, '')
+    .replace(/\[VISUAL ANALYSIS OF ATTACHED IMAGE \([^)]+\)\]:\n?/g, '')
+    .replace(/\[VISION SYSTEM NOTICE\]:\s*/g, '')
+    .replace(/\n\s*\n\s*\n/g, '\n\n')
+    .trim();
+};
+
+/** Extracts a numeric parameter size (in billions) from the model name for tier-based optimizations. */
+const getModelSizeB = (name: string): number => {
+  const match = name.match(/(\d+(?:\.\d+)?)\s*B/i);
+  if (match) return parseFloat(match[1]);
+  // Handle 'Mini' / 'Mini' variants as ~3.8B (Phi 3.5 Mini)
+  if (/mini/i.test(name)) return 3.8;
+  return 3; // safe default for unknown models
+};
+
+/** Trims a vision analysis string to fit within a target word budget for smaller models. */
+const trimVisionForModel = (visionText: string, modelSizeB: number): string => {
+  if (!visionText || modelSizeB >= 7) return visionText; // Large models get full text
+  // Strip the header wrapper if present — we re-add a leaner one later
+  let text = visionText
+    .replace(/\[VISUAL ANALYSIS OF ATTACHED IMAGE \([^)]+\)\]:\n?/, '')
+    .replace(/\[CURRENT PHOTO OBSERVATION\]:\s*/i, '')
+    .trim();
+  const wordBudget = modelSizeB <= 1 ? 60 : modelSizeB <= 2 ? 100 : 160;
+  const words = text.split(/\s+/);
+  if (words.length > wordBudget) {
+    text = words.slice(0, wordBudget).join(' ') + '...';
+  }
+  return text;
+};
+
+const makeVisionUnavailableNotice = (fileName: string, reason?: string) =>
+  `[VISION SYSTEM NOTICE]: An image named "${fileName}" is attached, but local pixel scanning is unavailable${reason ? `: ${reason}` : ''}. A complete Qwen2-VL package requires both the main model and its mmproj projector. Please reinstall the Qwen2-VL vision model from the Vision Catalog in settings.`;
+
+const generateVisionAnalysisForPrompt = async (
+  imageUri: string,
+  fileName: string,
+  userQuery: string,
+  mainContext?: LlamaContext | null,
+  onProgress?: (text: string) => void,
+): Promise<string> => {
+  const visionModelInfo = await getSelectedInstalledVisionModel();
+  const visionName = visionModelInfo?.name || 'Vision AI Engine';
+  const isVisionInstalled = Boolean(visionModelInfo?.isInstalled) && await hasInstalledVisionModel().catch(() => false);
+  let imagePath: string;
+  try {
+    imagePath = await getVisionImageFilePath(imageUri, fileName);
+  } catch (error) {
+    console.warn('generateVisionAnalysisForPrompt: failed to prepare image for vision:', error);
+    return makeVisionUnavailableNotice(fileName, 'the selected image could not be read by the local vision runtime');
+  }
+  let accumulatedVisionText = '';
+
+  const handleVisionData = (data: CompletionTokenUpdate) => {
+    const chunk = coerceString(data.token) || coerceString(data.content);
+    if (chunk) {
+      accumulatedVisionText += chunk;
+      const clean = sanitizeVisionOutput(accumulatedVisionText);
+      onProgress?.(clean || accumulatedVisionText);
+    } else {
+      const acc = coerceString(data.accumulated_text);
+      if (acc && acc.length > accumulatedVisionText.length) {
+        accumulatedVisionText = acc;
+        const clean = sanitizeVisionOutput(accumulatedVisionText);
+        onProgress?.(clean || accumulatedVisionText);
+      }
+    }
+  };
+
+  // Case 1: If mainContext itself is multimodal / vision enabled
+  if (mainContext) {
+    const isMainMultimodal = await mainContext.isMultimodalEnabled?.().catch(() => false);
+    if (isMainMultimodal) {
+      try {
+        const visionPrompt = `<|im_start|>user\n<__media__>\nWhat is inside this image? Describe the main subject, people, emotional facial expressions (crying, happy, sad), background, and text in detail.\n<|im_end|>\n<|im_start|>assistant\n`;
+        const result = await mainContext.completion(
+          {
+            prompt: visionPrompt,
+            media_paths: [imagePath],
+            n_predict: 320,
+            temperature: 0.2,
+            top_p: 0.9,
+            stop: STOP_WORDS,
+          },
+          handleVisionData,
+        ).catch(e => {
+          console.warn('generateVisionAnalysisForPrompt: mainContext vision completion failed:', e);
+          return null;
+        });
+
+        let rawText = (result?.text || (result as any)?.content || accumulatedVisionText || '').trim();
+        const fullText = sanitizeVisionOutput(rawText);
+        if (fullText) {
+          return `[VISUAL ANALYSIS OF ATTACHED IMAGE (${visionName.toUpperCase()})]:\n${fullText}`;
+        }
+      } catch (e) {
+        console.warn('generateVisionAnalysisForPrompt: mainContext vision error:', e);
+      }
+    }
+  }
+
+  // Case 2: Dedicated Vision Model is installed (e.g. SmolVLM, Moondream, Qwen2-VL, etc.)
+  if (isVisionInstalled && visionModelInfo?.fileName) {
+    let dedicatedVisionCtx: LlamaContext | null = null;
+    try {
+      const resolvedVisionPath = visionModelInfo.filePath || getModelFilePath(visionModelInfo.fileName);
+      const modelUri = resolvedVisionPath.startsWith('file://') ? resolvedVisionPath : `file://${resolvedVisionPath}`;
+      const resolvedMmprojPath = visionModelInfo.mmprojPath || (visionModelInfo.mmprojFileName ? getModelFilePath(visionModelInfo.mmprojFileName) : null);
+      const mmprojPath = resolvedMmprojPath ? (resolvedMmprojPath.startsWith('file://') ? resolvedMmprojPath : `file://${resolvedMmprojPath}`) : null;
+
+      dedicatedVisionCtx = await initLlama({
+        model: modelUri,
+        n_ctx: 2048,
+        n_batch: 64,
+        n_threads: 2,
+        n_gpu_layers: 0,
+        ctx_shift: false,
+        use_mmap: true,
+        use_mlock: false,
+      }).catch(e => {
+        console.warn('generateVisionAnalysisForPrompt: failed to load dedicated vision model context:', e);
+        return null;
+      });
+
+      if (dedicatedVisionCtx) {
+        let isMultimodalActive = await dedicatedVisionCtx.isMultimodalEnabled?.().catch(() => false);
+        if (!isMultimodalActive && typeof dedicatedVisionCtx.initMultimodal === 'function') {
+          if (mmprojPath) {
+            let multimodalStarted = await dedicatedVisionCtx.initMultimodal({
+              path: mmprojPath,
+              use_gpu: true,
+              image_max_tokens: 512,
+            }).catch(e => {
+              console.warn('generateVisionAnalysisForPrompt: initMultimodal failed on vision model:', e);
+              return false;
+            });
+            // Some Android devices cannot initialize the projector on their
+            // GPU backend. Retry on CPU before declaring vision unavailable.
+            if (!multimodalStarted) {
+              multimodalStarted = await dedicatedVisionCtx.initMultimodal({
+                path: mmprojPath,
+                use_gpu: false,
+                image_max_tokens: 512,
+              }).catch(e => {
+                console.warn('generateVisionAnalysisForPrompt: CPU initMultimodal fallback failed:', e);
+                return false;
+              });
+            }
+            isMultimodalActive = await dedicatedVisionCtx.isMultimodalEnabled?.().catch(() => false);
+          } else {
+            console.warn('generateVisionAnalysisForPrompt: vision model has no mmproj file; multimodal disabled.');
+          }
+        }
+
+        if (!isMultimodalActive) {
+          await dedicatedVisionCtx.release().catch(() => {});
+          dedicatedVisionCtx = null;
+          return makeVisionUnavailableNotice(fileName, 'the vision projector could not be initialized');
+        }
+
+        // llama.rn replaces <__media__> with the model's image embeddings.
+        // It must be inside the user turn; using Qwen's literal <image> token
+        // made the runtime append the real image after the assistant turn.
+        const visionPrompt = `<|im_start|>user\n<__media__>\nDescribe what is in this image in detail. List the main subject, people, emotional facial expressions (e.g. crying, happy, sad), background, and text.\n<|im_end|>\n<|im_start|>assistant\n`;
+        
+        const completionOptions: any = {
+          prompt: visionPrompt,
+          n_predict: 320,
+          temperature: 0.2,
+          top_p: 0.9,
+          stop: VISION_STOP_WORDS,
+        };
+
+        completionOptions.media_paths = [imagePath];
+
+        const result = await dedicatedVisionCtx.completion(
+          completionOptions,
+          handleVisionData,
+        ).catch(e => {
+          console.warn('generateVisionAnalysisForPrompt: dedicated vision completion failed:', e);
+          return null;
+        });
+
+        let rawText = (result?.text || (result as any)?.content || accumulatedVisionText || '').trim();
+        let cleanText = sanitizeVisionOutput(rawText);
+
+        if (!cleanText || cleanText.length < 5 || rawText.includes('<|box_start|>')) {
+          const retryResult = await dedicatedVisionCtx.completion({
+            prompt: `<|im_start|>user\n<__media__>\nWhat is this image?\n<|im_end|>\n<|im_start|>assistant\nThis image shows`,
+            media_paths: [imagePath],
+            n_predict: 256,
+            temperature: 0.4,
+            stop: VISION_STOP_WORDS,
+          }).catch(() => null);
+          const retryRaw = (retryResult?.text || (retryResult as any)?.content || '').trim();
+          if (retryRaw) {
+            const formatted = retryRaw.toLowerCase().startsWith('this image shows') ? retryRaw : `This image shows ${retryRaw}`;
+            cleanText = sanitizeVisionOutput(formatted);
+          }
+        }
+
+        // Safely release dedicated vision context after extraction
+        await dedicatedVisionCtx.release().catch(() => {});
+        dedicatedVisionCtx = null;
+
+        const realOutput = cleanText || (rawText && !rawText.includes('<|box_start|>') ? rawText : '');
+        if (realOutput) {
+          return `[VISUAL ANALYSIS OF ATTACHED IMAGE (${visionName.toUpperCase()})]:\n${realOutput}`;
+        }
+      }
+    } catch (err) {
+      console.warn('generateVisionAnalysisForPrompt dedicated vision error:', err);
+      if (dedicatedVisionCtx) {
+        await (dedicatedVisionCtx as LlamaContext).release().catch(() => {});
+      }
+    }
+
+    const realOutput = accumulatedVisionText || '';
+    if (realOutput) {
+      return `[VISUAL ANALYSIS OF ATTACHED IMAGE (${visionName.toUpperCase()})]:\n${realOutput}`;
+    }
+  }
+
+  // Case 3: No Vision Model active/installed — return explicit instruction to LLM so it never hallucinates
+  return makeVisionUnavailableNotice(
+    fileName,
+    isVisionInstalled ? 'the vision model returned no usable analysis' : undefined,
+  );
+};
 
 interface Props {
   onBack: () => void;
+  onOpenDownload?: () => void;
 }
 
 type ChatRole = 'user' | 'assistant' | 'notice';
@@ -98,10 +382,15 @@ type ChatMessage = {
   id: string;
   role: ChatRole;
   text: string;
+  attachedImageUri?: string;
   interrupted?: boolean;
   isTruncated?: boolean;
   thoughtTimeMs?: number;
   totalTimeMs?: number;
+  visionText?: string;
+  isScanningVision?: boolean;
+  visionModelName?: string;
+  visionLabel?: string;
 };
 
 type MessageSegment =
@@ -167,6 +456,14 @@ const STOP_WORDS = [
   '<|endoftext|>',
 ];
 
+const VISION_STOP_WORDS = [
+  ...STOP_WORDS,
+  '<|box_start|>',
+  '<|box_end|>',
+  '<|object_ref_start|>',
+  '<|object_ref_end|>',
+];
+
 const ASCII_SYMBOL_PATTERN = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/g;
 const LONG_SYMBOL_RUN_PATTERN = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]{8,}/;
 
@@ -180,6 +477,36 @@ const stripStopMarkers = (text: string) =>
 const sanitizeMessageForLlama = (text: string) => {
   if (!text) return '';
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+};
+
+const formatUserMemoryForPrompt = (rawMemory: string): string => {
+  if (!rawMemory || !rawMemory.trim()) {
+    return 'None specified.';
+  }
+  return rawMemory
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => {
+      if (/^(the user|user|they|he|she)\b/i.test(line)) {
+        return `- ${line}`;
+      }
+      const lower = line.toLowerCase();
+      if (
+        lower.startsWith('is ') ||
+        lower.startsWith('likes ') ||
+        lower.startsWith('wants ') ||
+        lower.startsWith('prefers ') ||
+        lower.startsWith('has ') ||
+        lower.startsWith('uses ') ||
+        lower.startsWith('works ') ||
+        lower.startsWith('loves ')
+      ) {
+        return `- The user ${line}`;
+      }
+      return `- The user: ${line}`;
+    })
+    .join('\n');
 };
 
 const MENU_ITEMS = [
@@ -216,6 +543,109 @@ const streamHaptic = () => {
     // Ignore stream haptic failures
   }
 };
+
+const SEND_BUTTON_COLORS = [
+  {hex: '#FFFFFF', name: 'Classic White'},
+  {hex: '#34C759', name: 'Emerald Green'},
+  {hex: '#0A84FF', name: 'Ocean Blue'},
+  {hex: '#FF9500', name: 'Sunset Orange'},
+  {hex: '#AF52DE', name: 'Neon Purple'},
+  {hex: '#FF2D55', name: 'Crimson Red'},
+  {hex: '#64D2FF', name: 'Cyan Blue'},
+];
+
+const INPUT_TEXT_COLORS = [
+  {hex: '#FFFFFF', name: 'Crisp White'},
+  {hex: '#30D158', name: 'Mint Green'},
+  {hex: '#64D2FF', name: 'Ice Blue'},
+  {hex: '#FF9500', name: 'Amber Orange'},
+  {hex: '#A855F7', name: 'Violet Purple'},
+  {hex: '#F2F2F7', name: 'Soft Gray'},
+  {hex: '#FF3B30', name: 'Hot Red'},
+];
+
+const USER_BUBBLE_COLORS = [
+  {hex: '#0AA550', name: 'Rivo Green'},
+  {hex: '#262629', name: 'Dark Gray'},
+  {hex: '#0A84FF', name: 'Ocean Blue'},
+  {hex: '#FF9500', name: 'Sunset Orange'},
+  {hex: '#AF52DE', name: 'Neon Purple'},
+  {hex: '#FF2D55', name: 'Crimson Red'},
+  {hex: '#00B4D8', name: 'Cyan Blue'},
+];
+
+const getContrastColor = (hex: string): string => {
+  if (!hex) return '#000000';
+  const cleanHex = hex.toUpperCase();
+  if (cleanHex === '#FFFFFF' || cleanHex === '#F2F2F7' || cleanHex === '#64D2FF') {
+    return '#000000';
+  }
+  return '#FFFFFF';
+};
+
+const AnimatedColorSwatch = React.memo(({
+  hex,
+  isSelected,
+  onPress,
+}: {
+  hex: string;
+  isSelected: boolean;
+  onPress: () => void;
+}) => {
+  const scaleAnim = useRef(new Animated.Value(isSelected ? 1.18 : 1)).current;
+
+  useEffect(() => {
+    Animated.spring(scaleAnim, {
+      toValue: isSelected ? 1.18 : 1,
+      friction: 6,
+      tension: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [isSelected, scaleAnim]);
+
+  const handlePress = () => {
+    Animated.sequence([
+      Animated.timing(scaleAnim, {
+        toValue: 0.88,
+        duration: 90,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleAnim, {
+        toValue: isSelected ? 1.18 : 1,
+        friction: 6,
+        tension: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+    onPress();
+  };
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.85}
+      onPress={handlePress}
+      hitSlop={{top: 4, bottom: 4, left: 4, right: 4}}>
+      <Animated.View
+        style={[
+          styles.colorSwatchCircle,
+          {
+            backgroundColor: hex,
+            transform: [{scale: scaleAnim}],
+          },
+          isSelected && styles.colorSwatchSelected,
+          isSelected && {borderColor: hex.toUpperCase() === '#FFFFFF' ? '#0A84FF' : '#FFFFFF'},
+        ]}>
+        {isSelected && (
+          <Check
+            color={getContrastColor(hex)}
+            size={12}
+            strokeWidth={3.2}
+          />
+        )}
+      </Animated.View>
+    </TouchableOpacity>
+  );
+});
 
 const setClipboardText = (text: string) => {
   const clipboard = NativeModules.RivoClipboard as
@@ -387,6 +817,36 @@ const shouldRepairResponse = (prompt: string, response: string, aiName: string) 
   !/who\s+are\s+you|what\s+are\s+you|your\s+name|code|program|script|class|function|write/i.test(prompt) &&
   isIdentityFallback(response, aiName);
 
+const stripEnclosingQuotes = (text: string): string => {
+  if (!text) return text;
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.startsWith('```')) return text;
+
+  const isQuoteChar = (ch: string) => ch === '"' || ch === '“' || ch === '”' || ch === "'";
+
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+
+  if (isQuoteChar(first) && isQuoteChar(last) && trimmed.length >= 2) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (inner.length > 0 && !inner.startsWith('```')) {
+      return inner;
+    }
+  }
+
+  if ((trimmed.startsWith('"') || trimmed.startsWith('“')) && !trimmed.startsWith('```')) {
+    const doubleQuoteCount = (trimmed.match(/["“”]/g) || []).length;
+    if (doubleQuoteCount === 1) {
+      return trimmed.slice(1).trimStart();
+    }
+    if (doubleQuoteCount === 2 && isQuoteChar(last)) {
+      return trimmed.slice(1, -1).trim();
+    }
+  }
+
+  return text;
+};
+
 const sanitizeGeneratedText = (text: string) => {
   const cleaned = stripStopMarkers(text)
     .replace(/^(thinking|composing|replying)\s*(\.{1,3})?\s*[:-]?\s*/i, '')
@@ -396,7 +856,7 @@ const sanitizeGeneratedText = (text: string) => {
     return '';
   }
 
-  return cleaned;
+  return stripEnclosingQuotes(cleaned);
 };
 
 const coerceString = (value: unknown) => (typeof value === 'string' ? value : '');
@@ -424,7 +884,7 @@ const getStreamTextFromUpdate = (
 };
 
 const getCompletionText = (result: CompletionTextResult, streamedText: string) =>
-  sanitizeGeneratedText(result.content || result.text || streamedText || '');
+  stripEnclosingQuotes(sanitizeGeneratedText(result.content || result.text || streamedText || ''));
 
 const isLikelyCorruptResponse = (text: string) => {
   if (isCodeLikeResponse(text)) {
@@ -480,7 +940,7 @@ const visibleGeneratedText = (text: string) => {
     return '';
   }
 
-  const visibleText = sanitizeGeneratedText(text).trimStart();
+  const visibleText = stripEnclosingQuotes(sanitizeGeneratedText(text)).trimStart();
   return isLikelyCorruptResponse(visibleText) ? '' : visibleText;
 };
 
@@ -599,7 +1059,7 @@ const parseThoughtAndContent = (rawText: string): ParsedThoughtResult => {
 
   const thinkMatch = rawText.match(/<think>([\s\S]*?)(?:<\/think>|$)/i);
   if (!thinkMatch) {
-    return {thoughtText: '', contentText: rawText, isStreamingThought: false};
+    return {thoughtText: '', contentText: stripEnclosingQuotes(rawText), isStreamingThought: false};
   }
 
   const thoughtText = thinkMatch[1].trim();
@@ -609,7 +1069,7 @@ const parseThoughtAndContent = (rawText: string): ParsedThoughtResult => {
     const closingIdx = rawText.search(/<\/think>/i);
     const afterClosing = closingIdx !== -1 ? rawText.slice(closingIdx + 8) : '';
     const contentText = afterClosing.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    return {thoughtText, contentText, isStreamingThought: false};
+    return {thoughtText, contentText: stripEnclosingQuotes(contentText), isStreamingThought: false};
   }
 
   return {thoughtText, contentText: '', isStreamingThought: true};
@@ -642,6 +1102,8 @@ const ThoughtAccordion = React.memo(({
       }
     }
   }, [isStreamingThought, isLive]);
+
+
 
   useEffect(() => {
     if (isExpanded) {
@@ -723,6 +1185,24 @@ const ThoughtAccordion = React.memo(({
           </ScrollView>
         </View>
       )}
+    </View>
+  );
+});
+
+const VisionCapsuleTag = React.memo(({
+  isScanning,
+  visionModelName,
+}: {
+  isScanning: boolean;
+  visionModelName?: string;
+}) => {
+  const modelLabel = visionModelName || 'Vision Engine';
+
+  return (
+    <View style={[styles.visionCapsuleContainer, isScanning && styles.visionCapsuleScanning]}>
+      <Text style={[styles.visionCapsuleText, isScanning && {color: '#34C759'}]}>
+        {isScanning ? `Scanning photo with ${modelLabel}...` : `Analyzed with ${modelLabel}`}
+      </Text>
     </View>
   );
 });
@@ -888,7 +1368,7 @@ const CopyStatusIcon = ({copied}: {copied: boolean}) => {
 
 const renderInlineParts = (inlineText: string, baseStyle?: any) => {
   if (!inlineText) return null;
-  const parts = inlineText.split(/(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*|`[\s\S]*?`)/g);
+  const parts = inlineText.split(/(\*\*[\s\S]*?\*\*|\*[\s\S]*?\*|_[\s\S]*?_|`[\s\S]*?`)/g);
 
   return parts.map((part, index) => {
     if (!part) return null;
@@ -899,9 +1379,12 @@ const renderInlineParts = (inlineText: string, baseStyle?: any) => {
         </Text>
       );
     }
-    if (part.startsWith('*') && part.endsWith('*') && part.length >= 2) {
+    if (
+      (part.startsWith('*') && part.endsWith('*') && part.length >= 2) ||
+      (part.startsWith('_') && part.endsWith('_') && part.length >= 2)
+    ) {
       return (
-        <Text key={index} style={{fontStyle: 'italic'}}>
+        <Text key={index} style={{fontStyle: 'italic', color: '#E4E4E7'}}>
           {part.slice(1, -1)}
         </Text>
       );
@@ -919,7 +1402,8 @@ const renderInlineParts = (inlineText: string, baseStyle?: any) => {
 
 const FormattedText = memo(({text, baseStyle}: {text: string; baseStyle: any}) => {
   if (!text) return null;
-  const lines = text.split('\n');
+  const cleanContent = stripEnclosingQuotes(text);
+  const lines = cleanContent.split('\n');
 
   return (
     <View style={styles.formattedTextContainer}>
@@ -928,16 +1412,61 @@ const FormattedText = memo(({text, baseStyle}: {text: string; baseStyle: any}) =
         if (!trimmed) {
           return <View key={lineIndex} style={styles.paragraphSpacer} />;
         }
-        if (/^#+\s/.test(trimmed)) {
-          const headingText = trimmed.replace(/^#+\s*/, '');
+        if (/^#\s/.test(trimmed)) {
+          const headingText = trimmed.replace(/^#\s*/, '');
           return (
-            <Text key={lineIndex} style={styles.markdownHeading}>
-              {headingText}
-            </Text>
+            <View key={lineIndex} style={styles.markdownH1}>
+              <Text style={styles.markdownH1Text}>
+                {renderInlineParts(headingText, styles.markdownH1Text)}
+              </Text>
+            </View>
           );
         }
-        if (/^[-*]\s/.test(trimmed)) {
-          const bulletText = trimmed.replace(/^[-*]\s*/, '');
+        if (/^##\s/.test(trimmed)) {
+          const headingText = trimmed.replace(/^##\s*/, '');
+          return (
+            <View key={lineIndex} style={styles.markdownH2}>
+              <Text style={styles.markdownH2Text}>
+                {renderInlineParts(headingText, styles.markdownH2Text)}
+              </Text>
+            </View>
+          );
+        }
+        if (/^###+\s/.test(trimmed)) {
+          const headingText = trimmed.replace(/^###+\s*/, '');
+          return (
+            <View key={lineIndex} style={styles.markdownH3}>
+              <Text style={styles.markdownH3Text}>
+                {renderInlineParts(headingText, styles.markdownH3Text)}
+              </Text>
+            </View>
+          );
+        }
+        if (/^>\s?/.test(trimmed)) {
+          const quoteText = trimmed.replace(/^>\s?/, '');
+          return (
+            <View key={lineIndex} style={styles.blockquoteContainer}>
+              <Text style={styles.blockquoteText}>
+                {renderInlineParts(quoteText, [baseStyle, styles.blockquoteText])}
+              </Text>
+            </View>
+          );
+        }
+        const numberMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+        if (numberMatch) {
+          const num = numberMatch[1];
+          const itemText = numberMatch[2];
+          return (
+            <View key={lineIndex} style={styles.listRow}>
+              <Text style={styles.listNumber}>{num}.</Text>
+              <Text style={styles.listContent}>
+                {renderInlineParts(itemText, baseStyle)}
+              </Text>
+            </View>
+          );
+        }
+        if (/^[-*•]\s/.test(trimmed)) {
+          const bulletText = trimmed.replace(/^[-*•]\s*/, '');
           return (
             <View key={lineIndex} style={styles.bulletRow}>
               <Text style={styles.bulletDot}>•</Text>
@@ -965,6 +1494,7 @@ const MessageBubble = memo(({
   thinkingLines,
   modelLogo,
   onToggleThought,
+  userBubbleColor,
 }: {
   generationLabel: string;
   isLive: boolean;
@@ -973,6 +1503,7 @@ const MessageBubble = memo(({
   thinkingLines: string[];
   modelLogo?: any;
   onToggleThought?: () => void;
+  userBubbleColor?: string;
 }) => {
   const appear = useRef(new Animated.Value(0)).current;
   const messageCopyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1103,12 +1634,22 @@ const MessageBubble = memo(({
             </View>
           )}
           <View style={[styles.messageStack, isUser && styles.userMessageStack]}>
-            <View style={[styles.messageBubble, isUser ? styles.userBubble : styles.assistantBubble]}>
+            <View style={[
+              styles.messageBubble,
+              isUser ? [styles.userBubble, userBubbleColor ? {backgroundColor: userBubbleColor} : null] : styles.assistantBubble,
+              isUser && item.attachedImageUri ? styles.userImageBubbleCard : null,
+            ]}>
               {shouldShowThinking && !parsedResult.thoughtText && (
                 <ThinkingText
                   isHiding={isThinkingHiding}
                   label={generationLabel}
                   lines={thinkingLines}
+                />
+              )}
+              {!isUser && Boolean(item.isScanningVision) && (
+                <VisionCapsuleTag
+                  isScanning={true}
+                  visionModelName={item.visionModelName}
                 />
               )}
               {!isUser && Boolean(parsedResult.thoughtText) && (
@@ -1128,7 +1669,30 @@ const MessageBubble = memo(({
                       shouldShowThinking && styles.liveMessageTextWrap,
                     ]}>
                     {isUser ? (
-                      <Text style={styles.messageText}>{item.text}</Text>
+                      <View style={item.attachedImageUri ? styles.userImageMessageWrapper : null}>
+                        {item.attachedImageUri ? (
+                          <View style={styles.userImageFrame}>
+                            <Image
+                              source={{uri: item.attachedImageUri}}
+                              style={styles.userBubbleImage}
+                              resizeMode="cover"
+                            />
+                            {item.visionLabel && false ? (
+                              <View style={styles.imageBadgeChip}>
+                                <Check color="#34C759" size={10} strokeWidth={2.8} />
+                                <Text style={styles.imageBadgeText} numberOfLines={1}>
+                                  {item.visionLabel}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        ) : null}
+                        {item.text ? (
+                          <Text style={[styles.messageText, item.attachedImageUri && styles.userImageCaptionText]}>
+                            {item.text}
+                          </Text>
+                        ) : null}
+                      </View>
                     ) : (
                       messageSegments.map((segment, index) =>
                         segment.type === 'code' ? (
@@ -1239,7 +1803,7 @@ const MessageBubble = memo(({
   );
 });
 
-const ChatScreen: React.FC<Props> = ({onBack}) => {
+const ChatScreen: React.FC<Props> = ({onBack, onOpenDownload}) => {
   const insets = useSafeAreaInsets();
   const {width: windowWidth} = useWindowDimensions();
 
@@ -1248,7 +1812,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const inputRef = useRef<React.ElementRef<typeof TextInput>>(null);
   const composerHostRef = useRef<React.ElementRef<typeof View>>(null);
   const contextRef = useRef<LlamaContext | null>(null);
-  const menuX = useRef(new Animated.Value(-380)).current;
+  const menuX = useRef(new Animated.Value(-windowWidth)).current;
+  const menuBackgroundSlide = useRef(new Animated.Value(0)).current;
   const infoX = useRef(new Animated.Value(windowWidth)).current;
   const infoBackgroundSlide = useRef(new Animated.Value(0)).current;
   const openInfoPanelFrameRef = useRef<number | null>(null);
@@ -1279,6 +1844,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const userScrolledUpRef = useRef(false);
   const layoutDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
+  const effortPopoverAnim = useRef(new Animated.Value(0)).current;
+  const androidKeyboardOffsetAnim = useRef(new Animated.Value(0)).current;
 
   // State
   const [activeThreadId, setActiveThreadId] = useState(() => createThreadId());
@@ -1304,6 +1871,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const [showThreadLimitAlert, setShowThreadLimitAlert] = useState(false);
   const [showLocalAccessAlert, setShowLocalAccessAlert] = useState(false);
   const [showLogoutConfirmAlert, setShowLogoutConfirmAlert] = useState(false);
+  const [showInstallVisionAlert, setShowInstallVisionAlert] = useState(false);
+  const [showDeleteVisionAlert, setShowDeleteVisionAlert] = useState(false);
+  const [visionInstalledForMenu, setVisionInstalledForMenu] = useState(false);
   const [isContextOpen, setIsContextOpen] = useState(false);
   const [isContextTransitionActive, setIsContextTransitionActive] = useState(false);
   const [localName, setLocalName] = useState('');
@@ -1311,44 +1881,6 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const [maxTokens, setMaxTokens] = useState(1024);
   const [isPerformanceMode, setIsPerformanceMode] = useState(false);
   const [isEffortPopoverOpen, setIsEffortPopoverOpen] = useState(false);
-  const effortPopoverAnim = useRef(new Animated.Value(0)).current;
-
-  const toggleEffortPopover = useCallback(() => {
-    lightHaptic();
-    LayoutAnimation.configureNext({
-      duration: 550,
-      create: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-        property: LayoutAnimation.Properties.opacity,
-      },
-      update: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-        property: LayoutAnimation.Properties.scaleY,
-      },
-      delete: {
-        type: LayoutAnimation.Types.easeInEaseOut,
-        property: LayoutAnimation.Properties.opacity,
-      },
-    });
-    setIsEffortPopoverOpen(prev => {
-      const next = !prev;
-      Animated.timing(effortPopoverAnim, {
-        toValue: next ? 1 : 0,
-        duration: 480,
-        easing: Easing.bezier(0.22, 1, 0.36, 1),
-        useNativeDriver: true,
-      }).start();
-      return next;
-    });
-  }, [effortPopoverAnim]);
-
-  const currentEffortLabel = useMemo(() => {
-    if (isPerformanceMode) return 'Fast (1024)';
-    if (maxTokens <= 256) return 'Light (256)';
-    if (maxTokens <= 512) return 'Medium (512)';
-    if (maxTokens <= 1024) return 'High (1024)';
-    return 'Ultra (2048)';
-  }, [isPerformanceMode, maxTokens]);
   const [keepMessages, setKeepMessages] = useState(16);
   const [aiName, setAiName] = useState('Rivo');
   const [aiPersonality, setAiPersonality] = useState('helpful, intelligent, friendly');
@@ -1368,17 +1900,122 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   const [isThinkingFading, setIsThinkingFading] = useState(false);
   const [isCurrentThreadCodingLocked, setIsCurrentThreadCodingLocked] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const androidKeyboardOffsetAnim = useRef(new Animated.Value(0)).current;
   const [isAndroidKeyboardVisible, setIsAndroidKeyboardVisible] = useState(false);
   const [androidKeyboardLift, setAndroidKeyboardLift] = useState(0);
+  const [sendButtonColor, setSendButtonColor] = useState('#FFFFFF');
+  const [inputTextColor, setInputTextColor] = useState('#FFFFFF');
+  const [userBubbleColor, setUserBubbleColor] = useState('#0AA550');
+  const [attachedImage, setAttachedImage] = useState<{
+    uri: string;
+    fileName?: string;
+    fileSize?: number;
+    isScanning?: boolean;
+    visionSummary?: string;
+    shortLabel?: string;
+  } | null>(null);
+  const attachedImageRef = useRef(attachedImage);
+  useEffect(() => { attachedImageRef.current = attachedImage; }, [attachedImage]);
 
-  // Memos
+  const [isVisionResultSheetOpen, setIsVisionResultSheetOpen] = useState(false);
+  const visionSheetAnim = useRef(new Animated.Value(0)).current;
+  const [copiedVisionToast, setCopiedVisionToast] = useState(false);
+
+  const openVisionResultSheet = useCallback(() => {
+    lightHaptic();
+    setIsVisionResultSheetOpen(true);
+    visionSheetAnim.setValue(0);
+    Animated.timing(visionSheetAnim, {
+      toValue: 1,
+      duration: 380,
+      easing: Easing.bezier(0.16, 1, 0.3, 1),
+      useNativeDriver: true,
+    }).start();
+  }, [visionSheetAnim]);
+
+  const closeVisionResultSheet = useCallback(() => {
+    lightHaptic();
+    Animated.timing(visionSheetAnim, {
+      toValue: 0,
+      duration: 280,
+      easing: Easing.bezier(0.25, 1, 0.5, 1),
+      useNativeDriver: true,
+    }).start(() => setIsVisionResultSheetOpen(false));
+  }, [visionSheetAnim]);
+
+  const changeSendButtonColor = useCallback((color: string) => {
+    lightHaptic();
+    setSendButtonColor(color);
+    AsyncStorage.setItem('rivo.styling.sendButtonColor', color);
+  }, []);
+
+  const changeInputTextColor = useCallback((color: string) => {
+    lightHaptic();
+    setInputTextColor(color);
+    AsyncStorage.setItem('rivo.styling.inputTextColor', color);
+  }, []);
+
+  const changeUserBubbleColor = useCallback((color: string) => {
+    lightHaptic();
+    setUserBubbleColor(color);
+    AsyncStorage.setItem('rivo.styling.userBubbleColor', color);
+  }, []);
+
+  const dismissComposerKeyboard = useCallback(() => {
+    inputRef.current?.blur();
+    Keyboard.dismiss();
+    requestAnimationFrame(() => {
+      inputRef.current?.blur();
+      Keyboard.dismiss();
+    });
+    setTimeout(() => {
+      inputRef.current?.blur();
+      Keyboard.dismiss();
+    }, 80);
+  }, []);
+
+  const closeEffortPopover = useCallback(() => {
+    lightHaptic();
+    Animated.timing(effortPopoverAnim, {
+      toValue: 0,
+      duration: 260,
+      easing: Easing.bezier(0.22, 1, 0.36, 1),
+      useNativeDriver: true,
+    }).start(() => {
+      setIsEffortPopoverOpen(false);
+    });
+  }, [effortPopoverAnim]);
+
+  const toggleEffortPopover = useCallback(() => {
+    lightHaptic();
+    dismissComposerKeyboard();
+    setIsEffortPopoverOpen(prev => {
+      const next = !prev;
+      effortPopoverAnim.stopAnimation();
+      Animated.timing(effortPopoverAnim, {
+        toValue: next ? 1 : 0,
+        duration: next ? 320 : 260,
+        easing: Easing.bezier(0.22, 1, 0.36, 1),
+        useNativeDriver: true,
+      }).start();
+      return next;
+    });
+  }, [dismissComposerKeyboard, effortPopoverAnim]);
+
+
+  const currentEffortLabel = useMemo(() => {
+    if (isPerformanceMode) return 'Fast (1024)';
+    if (maxTokens <= 256) return 'Light (256)';
+    if (maxTokens <= 512) return 'Medium (512)';
+    if (maxTokens <= 1024) return 'High (1024)';
+    return 'Ultra (2048)';
+  }, [isPerformanceMode, maxTokens]);
+
   const scrimOpacity = useMemo(() => {
     return menuX.interpolate({
-      inputRange: [-380, 0],
+      inputRange: [-windowWidth, 0],
       outputRange: [0, 1],
     });
-  }, [menuX]);
+  }, [menuX, windowWidth]);
 
   const emptyLogoGlowScale = useMemo(
     () =>
@@ -1511,6 +2148,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         storedIsPerfMode,
         storedUserName,
         storedUserMemoryBullets,
+        storedSendButtonColor,
+        storedInputTextColor,
+        storedUserBubbleColor,
       ] = await Promise.all([
         AsyncStorage.getItem(CHAT_THREADS_KEY),
         AsyncStorage.getItem(ACTIVE_THREAD_KEY),
@@ -1525,6 +2165,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         AsyncStorage.getItem('rivo.neural.isPerformanceMode'),
         AsyncStorage.getItem('rivo.neural.userName'),
         AsyncStorage.getItem('rivo.neural.userMemoryBullets'),
+        AsyncStorage.getItem('rivo.styling.sendButtonColor'),
+        AsyncStorage.getItem('rivo.styling.inputTextColor'),
+        AsyncStorage.getItem('rivo.styling.userBubbleColor'),
       ]);
 
       const parsedThreads: StoredThread[] = storedThreads ? JSON.parse(storedThreads) : [];
@@ -1581,6 +2224,15 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       }
       if (storedUserMemoryBullets) {
         setLocalMemoryBullets(storedUserMemoryBullets);
+      }
+      if (storedSendButtonColor) {
+        setSendButtonColor(storedSendButtonColor);
+      }
+      if (storedInputTextColor) {
+        setInputTextColor(storedInputTextColor);
+      }
+      if (storedUserBubbleColor) {
+        setUserBubbleColor(storedUserBubbleColor);
       }
 
       // Hydrate optimization settings if they exist
@@ -1712,32 +2364,31 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   }, [androidKeyboardLift]);
 
   useEffect(() => {
-    Animated.timing(menuX, {
-      toValue: isMenuOpen ? 0 : -380,
-      duration: 240,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    }).start();
-  }, [isMenuOpen, menuX]);
-
-  const dismissComposerKeyboard = useCallback(() => {
-    inputRef.current?.blur();
-    Keyboard.dismiss();
-    requestAnimationFrame(() => {
-      inputRef.current?.blur();
-      Keyboard.dismiss();
-    });
-    setTimeout(() => {
-      inputRef.current?.blur();
-      Keyboard.dismiss();
-    }, 80);
-  }, []);
+    Animated.parallel([
+      Animated.timing(menuX, {
+        toValue: isMenuOpen ? 0 : -windowWidth,
+        duration: 250,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(menuBackgroundSlide, {
+        toValue: isMenuOpen ? 1 : 0,
+        duration: 250,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+    if (isMenuOpen) {
+      hasInstalledVisionModel().then(installed => setVisionInstalledForMenu(installed)).catch(() => {});
+    }
+  }, [isMenuOpen, menuX, menuBackgroundSlide, windowWidth]);
 
   useEffect(() => {
-    if (isMenuOpen || isInfoOpen) {
+    if (isMenuOpen || isInfoOpen || isContextOpen || isEffortPopoverOpen) {
       dismissComposerKeyboard();
     }
-  }, [dismissComposerKeyboard, isInfoOpen, isMenuOpen]);
+  }, [dismissComposerKeyboard, isInfoOpen, isMenuOpen, isContextOpen, isEffortPopoverOpen]);
+
 
   const openSideMenu = useCallback(() => {
     dismissComposerKeyboard();
@@ -1803,6 +2454,145 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       if (finished) setIsInfoOpen(false);
     });
   }, [infoBackgroundSlide, infoX, windowWidth]);
+
+  const preScanAttachedImage = useCallback(async (imageUri: string, fileName: string) => {
+    try {
+      const rawSummary = await generateVisionAnalysisForPrompt(
+        imageUri,
+        fileName,
+        'Describe photo subjects, emotional expressions, objects, text and scene details in plain English',
+        contextRef.current,
+        (partialText) => {
+          setAttachedImage(prev => {
+            if (!prev || prev.uri !== imageUri) return prev;
+            return {
+              ...prev,
+              visionSummary: partialText,
+            };
+          });
+        },
+      );
+
+      // Keep the system marker intact: the attachment UI uses it to show the
+      // correct "install/retry" action instead of misleadingly offering a
+      // successful-looking result to copy.
+      const finalSummary = rawSummary.includes('[VISION SYSTEM NOTICE]')
+        ? rawSummary
+        : sanitizeVisionOutput(rawSummary) || rawSummary || '';
+
+      let shortLabel = 'Vision Ready';
+      if (finalSummary && !finalSummary.includes('[VISION SYSTEM NOTICE]')) {
+        const cleanLines = finalSummary
+          .replace(/\[VISUAL ANALYSIS OF ATTACHED IMAGE \([^)]+\)\]:\n?/, '')
+          .split('\n')
+          .map(l => l.replace(/^[-*•\d.]+\s*/, '').trim())
+          .filter(l => l.length > 2);
+        const firstSentence = cleanLines[0] || '';
+        if (firstSentence) {
+          shortLabel = firstSentence.length > 36 ? firstSentence.slice(0, 33) + '...' : firstSentence;
+        }
+      } else if (finalSummary && finalSummary.includes('[VISION SYSTEM NOTICE]')) {
+        shortLabel = 'Vision Offline';
+      }
+
+      setAttachedImage(prev => {
+        if (!prev || prev.uri !== imageUri) return prev;
+        return {
+          ...prev,
+          isScanning: false,
+          visionSummary: finalSummary,
+          shortLabel,
+        };
+      });
+    } catch (err) {
+      console.warn('ChatScreen: preScanAttachedImage error:', err);
+      setAttachedImage(prev => {
+        if (!prev || prev.uri !== imageUri) return prev;
+        return {
+          ...prev,
+          isScanning: false,
+          visionSummary: 'Visual pixel scan completed.',
+          shortLabel: 'Ready',
+        };
+      });
+    }
+  }, []);
+
+  const handleAttachPress = useCallback(async () => {
+    dismissComposerKeyboard();
+    lightHaptic();
+    const installedVision = await getSelectedInstalledVisionModel();
+    if (!installedVision || !installedVision.isInstalled) {
+      // No vision model yet — ask the user before kicking off the download flow.
+      setShowInstallVisionAlert(true);
+      return;
+    }
+
+    const hasPermission = await requestPhotoPermissions();
+    if (!hasPermission) {
+      return;
+    }
+
+    launchImageLibrary({mediaType: 'photo', selectionLimit: 1, quality: 0.8}, response => {
+      if (response.didCancel) {
+        return;
+      }
+      if (response.errorCode || response.errorMessage) {
+        console.warn('ChatScreen: ImagePicker error:', response.errorCode, response.errorMessage);
+        return;
+      }
+      const asset = response.assets?.[0];
+      if (asset?.uri) {
+        const uri = asset.uri;
+        const fileName = asset.fileName || 'photo.jpg';
+        setAttachedImage({
+          uri,
+          fileName,
+          fileSize: asset.fileSize,
+          isScanning: true,
+        });
+        preScanAttachedImage(uri, fileName);
+      }
+    });
+  }, [dismissComposerKeyboard, preScanAttachedImage]);
+
+  const handleConfirmInstallVision = useCallback(async () => {
+    setShowInstallVisionAlert(false);
+    try {
+      await seedVisionDownload();
+      onOpenDownload?.();
+    } catch (error) {
+      console.warn('ChatScreen: failed to seed vision download:', error);
+    }
+  }, [onOpenDownload]);
+
+  const handleDeleteVisionModel = useCallback(async () => {
+    setShowDeleteVisionAlert(false);
+    try {
+      const visionInfo = await getSelectedInstalledVisionModel();
+      if (visionInfo?.fileName) {
+        await deleteModelFile(visionInfo.fileName);
+      }
+      if (visionInfo?.mmprojFileName) {
+        await deleteModelFile(visionInfo.mmprojFileName);
+      }
+      await AsyncStorage.multiRemove([
+        'selectedVisionModelId',
+        'selectedVisionModelName',
+        'selectedVisionModelFileName',
+        'selectedVisionModelSizeBytes',
+        'selectedVisionModelMmprojFileName',
+        'selectedVisionModelMmprojSizeBytes',
+        'selectedVisionModelDownloadUrl',
+        'selectedVisionModelMmprojDownloadUrl',
+        'visionModelDownloadComplete',
+        'isVisionDownload',
+      ]);
+      setVisionInstalledForMenu(false);
+    } catch (err) {
+      console.warn('ChatScreen: failed to delete vision model:', err);
+    }
+  }, []);
 
   const openContextPanel = useCallback(() => {
     dismissComposerKeyboard();
@@ -2086,8 +2876,11 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         },
         progress => setStatus(`Warming ${Math.round(progress * 100)}%`),
       );
-    } catch (error) {
-      console.warn('ChatScreen: mmap model load failed, retrying safer load:', error);
+    } catch (error: any) {
+      console.warn('ChatScreen: model load failed, retrying safer load:', error);
+      if (error?.message?.includes('JSI')) {
+        await new Promise(resolve => setTimeout(() => resolve(null), 600));
+      }
       setStatus('Retrying engine');
       context = await initLlama(
         {
@@ -2108,6 +2901,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
   }, []);
 
   const scrollToEnd = useCallback((animated = true, force = false) => {
+    if (force) {
+      userScrolledUpRef.current = false;
+    }
     if (!force && userScrolledUpRef.current) {
       return;
     }
@@ -2335,11 +3131,18 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
 
     pulseSend();
 
+    const currentAttachedImage = attachedImageRef.current;
+    if (currentAttachedImage) {
+      setAttachedImage(null);
+    }
+
     const now = Date.now();
     const userMessage: ChatMessage = {
       id: `${now}_user`,
       role: 'user',
       text: prompt,
+      attachedImageUri: currentAttachedImage?.uri,
+      visionLabel: currentAttachedImage?.shortLabel,
     };
     const nextUserMemory = extractUserMemory(prompt, userMemory);
     clearThinkingFadeTimer();
@@ -2349,6 +3152,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       setUserMemory(nextUserMemory);
     }
     const rememberedName = extractNameFromMemory(nextUserMemory);
+    const visionModelInfo = await getSelectedInstalledVisionModel();
     const assistantId = `${now}_assistant`;
     userScrolledUpRef.current = false;
     isChatScrollInteractingRef.current = false;
@@ -2357,16 +3161,35 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       id: assistantId,
       role: 'assistant',
       text: '',
+      isScanningVision: Boolean(currentAttachedImage && !currentAttachedImage.visionSummary),
+      visionModelName: visionModelInfo?.name || 'Vision AI Engine',
     };
     let baseMessages = messagesRef.current.filter(item => item.role !== 'notice');
     const isFirstMessage = baseMessages.length === 0;
-    setThinkingTrace(
-      buildThinkingTrace(
-        prompt,
-        Boolean(nextUserMemory || memorySummary),
-        isFirstMessage,
-      ),
-    );
+
+    if (currentAttachedImage) {
+      setThinkingTrace(
+        currentAttachedImage.visionSummary
+          ? [
+              'Applying cached vision analysis...',
+              'Reasoning with local AI engine...',
+            ]
+          : [
+              'Analyzing image with Vision model...',
+              'Extracting visual features & context...',
+              'Synthesizing multimodal understanding...',
+              'Reasoning with local AI engine...',
+            ],
+      );
+    } else {
+      setThinkingTrace(
+        buildThinkingTrace(
+          prompt,
+          Boolean(nextUserMemory || memorySummary),
+          isFirstMessage,
+        ),
+      );
+    }
     let streamedText = '';
     let lastVisibleStreamText = '';
     let didStartThinkingFade = false;
@@ -2426,6 +3249,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       userScrolledUpRef.current = false;
       isChatAtBottomRef.current = true;
       scrollToEnd(true, true);
+      setTimeout(() => {
+        scrollToEnd(true, true);
+      }, 80);
       setStatus('Composing');
 
       const activeKeepMessages = isPerformanceMode ? 3 : keepMessages;
@@ -2441,51 +3267,98 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
 
       const emojiQuantityInstruction =
         currentEmojiQty === 'none'
-          ? `EMOJI RULE: Do NOT use any emojis under any circumstances. Keep responses 100% text-based without emojis.`
+          ? `Do not use any emojis in your response. Keep text emoji-free.`
           : currentEmojiQty === 'low'
-          ? `EMOJI RULE: Write complete text responses. Use at most 1 emoji attached to your text.`
+          ? `Include 1-2 friendly emojis in your reply (e.g. 😊).`
           : currentEmojiQty === 'high'
-          ? `EMOJI RULE: Write complete, helpful text sentences first. Attach 2-3 expressive emojis (such as ${aiEmoji} ✨) to your text. NEVER output emojis alone without full text.`
-          : `EMOJI RULE: Write helpful text sentences, incorporating 1-2 relevant emojis naturally (such as ${aiEmoji}).`;
+          ? `Include 4-6 expressive emojis naturally throughout your response (e.g. 😊, 🚀, 💡, 💻).`
+          : `Include 2-3 friendly emojis in your reply (e.g. 😊, 👍).`;
 
       const thinkingDirective = isPerformanceMode
-        ? 'REASONING EFFORT DIRECTIVE: Fast Mode. Provide quick, direct, concise responses with minimal scratchpad thinking.'
+        ? 'Fast Mode: Provide quick, direct, concise responses.'
         : maxTokens <= 256
-        ? 'REASONING EFFORT DIRECTIVE: Light Mode. Be fast, direct, and concise. Minimize unnecessary thinking steps.'
+        ? 'Light Mode: Be fast, direct, and concise.'
         : maxTokens <= 512
-        ? 'REASONING EFFORT DIRECTIVE: Medium Mode. Provide balanced, structured step-by-step reasoning.'
+        ? 'Medium Mode: Provide balanced step-by-step reasoning.'
         : maxTokens <= 1024
-        ? 'REASONING EFFORT DIRECTIVE: High Mode. Exercise deep reasoning. Thoroughly analyze logic, edge cases, and code structure before responding.'
-        : 'REASONING EFFORT DIRECTIVE: Ultra Mode. Apply maximum analytical effort. Rigorously evaluate all possibilities, edge cases, and complex architecture.';
+        ? 'High Mode: Exercise deep reasoning and thorough logic.'
+        : 'Ultra Mode: Apply maximum analytical effort and exhaustive reasoning.';
 
       const systemContent = isPerformanceMode
         ? [
-            `STRICT ROLE & IDENTITY: You are ${currentAiName}, an offline AI assistant.`,
-            `REQUIRED PERSONALITY & VIBE: ${currentPersonality}. You MUST strictly adopt this persona in all your replies.`,
-            emojiQuantityInstruction,
-            `IDENTITY RULE: Your assistant name is ${currentAiName}. Never claim the user is ${currentAiName}.`,
-            currentUserName ? `USER IDENTITY: The user's name is ${currentUserName}.` : '',
-            currentMemoryText ? `USER FACTS & PREFERENCES: ${currentMemoryText}.` : '',
-            activeMemorySummary ? `CONTEXT SUMMARY: ${activeMemorySummary}.` : '',
-            thinkingDirective,
-          ].filter(Boolean).join(' ')
+            `You are ${currentAiName}, an offline AI assistant.`,
+            `Personality: ${currentPersonality}.`,
+            `CRITICAL IDENTITY FACTS:`,
+            `- The founder, owner, creator, and developer of Rivo (and Rivo Agent) is Sanket Padhyal.`,
+            `- If asked about the owner, founder, creator, or who made Rivo, you MUST state that Sanket Padhyal is the owner and founder of Rivo.`,
+            currentUserName ? `You are speaking with ${currentUserName}.` : '',
+            currentMemoryText ? `Known facts about ${currentUserName || 'the user'}:\n${formatUserMemoryForPrompt(currentMemoryText)}` : '',
+            `Instructions:`,
+            `- Reply directly to the user's message in clean Markdown text.`,
+            `- Do not wrap your response in quotation marks or preamble text.`,
+            `- ${emojiQuantityInstruction}`,
+            `- ${thinkingDirective}`,
+          ].filter(Boolean).join('\n')
         : [
-            `STRICT ROLE & IDENTITY: You are ${currentAiName}, a highly capable offline AI assistant companion.`,
-            `REQUIRED PERSONALITY & VIBE: ${currentPersonality}. You MUST strictly adopt this exact persona, tone, and vibe in all your replies.`,
-            `ACTUAL LOCAL MODEL ENGINE: ${modelName}.`,
-            `CAPABILITIES: You can answer questions, brainstorm, write prose, and generate complete code implementations.`,
-            `DIRECT RESPONSE RULE: Answer the user's request directly and thoroughly according to your configured personality.`,
-            emojiQuantityInstruction,
-            `IDENTITY RULE: Your assistant name is ${currentAiName}. Never claim the user's name is ${currentAiName}.`,
+            `You are ${currentAiName}, a highly capable offline AI companion running locally on ${modelName}.`,
+            `Personality and vibe: ${currentPersonality}.`,
+            `CRITICAL IDENTITY FACTS:`,
+            `- The founder, owner, creator, and developer of Rivo (and Rivo Agent) is Sanket Padhyal.`,
+            `- If asked who owns, created, founded, or developed Rivo, you MUST state clearly that Sanket Padhyal is the owner, founder, and creator of Rivo.`,
             currentUserName
-              ? `USER IDENTITY: The user's name is ${currentUserName}. Answer that the user is ${currentUserName} if asked.`
-              : `USER IDENTITY: The user's name is unknown unless specified in memory.`,
+              ? `You are talking to ${currentUserName}. Address the user as ${currentUserName}.`
+              : `You are talking to the user.`,
             currentMemoryText
-              ? `KNOWN USER FACTS & PREFERENCES:\n${currentMemoryText}`
-              : 'KNOWN USER FACTS & PREFERENCES: None specified yet.',
-            activeMemorySummary ? `COMPACTED CONVERSATION MEMORY:\n${activeMemorySummary}` : '',
-            thinkingDirective,
-          ].filter(Boolean).join('\n');
+              ? `Known facts about ${currentUserName || 'the user'}:\n${formatUserMemoryForPrompt(currentMemoryText)}`
+              : '',
+            `Instructions:`,
+            `- Write your reasoning and response strictly in clear English.`,
+            `- Answer directly and naturally in clean Markdown text (headers # ##, bold text, bullet points, code blocks).`,
+            `- NEVER enclose your output in quotation marks ("...") or echo these system instructions.`,
+            `- ${emojiQuantityInstruction}`,
+            `- ${thinkingDirective}`,
+            activeMemorySummary ? `Conversation context:\n${activeMemorySummary}` : '',
+            currentAttachedImage ? (getModelSizeB(modelName) <= 2
+              ? `Image context: An image observation is included in the user message. Answer based only on what is described.`
+              : `Multimodal context: Answer based strictly on the verifiable image observation.`
+            ) : '',
+          ].filter(Boolean).join('\n\n');
+
+      let visualContextPrefix = '';
+      if (currentAttachedImage) {
+        if (currentAttachedImage.visionSummary) {
+          visualContextPrefix = currentAttachedImage.visionSummary;
+        } else {
+          setStatus('Scanning image with Vision model...');
+          visualContextPrefix = await generateVisionAnalysisForPrompt(
+            currentAttachedImage.uri,
+            currentAttachedImage.fileName || 'photo.jpg',
+            prompt,
+            context,
+            (partialVisionText) => {
+              updateMessagesAndRef(current =>
+                current.map(msg =>
+                  msg.id === activeAssistantId
+                    ? {...msg, visionText: partialVisionText, isScanningVision: true}
+                    : msg,
+                ),
+              );
+            },
+          );
+        }
+
+        const cleanVisionText = visualContextPrefix
+          .replace(/\[VISION MODEL ANALYSIS \([^)]+\)\]:\nVisual Content Description:\n/, '')
+          .replace(/\[VISION SYSTEM NOTICE\]: /, '');
+
+        updateMessagesAndRef(current =>
+          current.map(msg =>
+            msg.id === activeAssistantId
+              ? {...msg, visionText: cleanVisionText, isScanningVision: false}
+              : msg,
+          ),
+        );
+      }
 
       const llamaMessages: RNLlamaOAICompatibleMessage[] = [
         {
@@ -2496,9 +3369,19 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           const cleanContent = item.role === 'assistant'
             ? (parseThoughtAndContent(item.text).contentText || item.text)
             : item.text;
+          
+          let contentToSend = sanitizeMessageForLlama(cleanContent);
+          if (item.id === userMessage.id && visualContextPrefix) {
+            const sizeB = getModelSizeB(modelName);
+            const trimmed = trimVisionForModel(visualContextPrefix, sizeB);
+            contentToSend = sizeB <= 2
+              ? `[Image]: ${trimmed}\n\n${cleanContent}`
+              : `[CURRENT PHOTO OBSERVATION]: ${trimmed}\n\nUser Request: ${cleanContent}`;
+          }
+
           return {
             role: item.role as 'user' | 'assistant',
-            content: sanitizeMessageForLlama(cleanContent),
+            content: contentToSend,
           };
         }),
       ];
@@ -2573,21 +3456,60 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       };
 
       const activeMaxTokens = isPerformanceMode ? Math.min(maxTokens, 1024) : maxTokens;
+      const completionOptions: any = {
+        messages: llamaMessages,
+        n_predict: activeMaxTokens,
+        temperature: 0.65,
+        top_p: 0.9,
+        top_k: 40,
+        min_p: 0.05,
+        penalty_last_n: 64,
+        penalty_repeat: 1.03,
+        penalty_freq: 0,
+        dry_multiplier: 0,
+        stop: STOP_WORDS,
+        force_pure_content: true,
+      };
+
+      if (currentAttachedImage?.uri) {
+        const imagePath = currentAttachedImage.uri.replace('file://', '');
+        try {
+          // Only pass raw media_paths to mainContext if main model is natively a Vision model (e.g. Qwen2-VL)
+          const isMainVisionModel = modelName.toLowerCase().includes('qwen2-vl') || modelName.toLowerCase().includes('vision');
+          if (isMainVisionModel) {
+            const isVisionAvailable = await hasInstalledVisionModel().catch(() => false);
+            if (isVisionAvailable) {
+              const installedVision = await getSelectedInstalledVisionModel();
+              if (installedVision?.fileName) {
+                const mmprojPath = installedVision.mmprojFileName
+                  ? `file://${getModelFilePath(installedVision.mmprojFileName)}`
+                  : null;
+                let isAlreadyEnabled = await context.isMultimodalEnabled?.().catch(() => false);
+                if (!isAlreadyEnabled && typeof context.initMultimodal === 'function' && mmprojPath) {
+                  await context.initMultimodal({
+                    path: mmprojPath,
+                    use_gpu: true,
+                    image_max_tokens: 512,
+                  }).catch(e => {
+                    console.warn('ChatScreen: initMultimodal info:', e);
+                    return false;
+                  });
+                }
+              }
+            }
+
+            const isMultimodalActive = await context.isMultimodalEnabled?.().catch(() => false);
+            if (isMultimodalActive) {
+              completionOptions.media_paths = [imagePath];
+            }
+          }
+        } catch (visionErr) {
+          console.warn('ChatScreen: vision init error:', visionErr);
+        }
+      }
+
       const result = await context.completion(
-        {
-          messages: llamaMessages,
-          n_predict: activeMaxTokens,
-          temperature: 0.65,
-          top_p: 0.9,
-          top_k: 40,
-          min_p: 0.05,
-          penalty_last_n: 64,
-          penalty_repeat: 1.03,
-          penalty_freq: 0,
-          dry_multiplier: 0,
-          stop: STOP_WORDS,
-          force_pure_content: true,
-        },
+        completionOptions,
         data => {
           handleStreamToken(data);
         },
@@ -2633,113 +3555,21 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         },
       ];
 
-      if (!isPerformanceMode && !wasInterrupted && finalText && !isCodeLikeResponse(finalText) && shouldRepairResponse(prompt, finalText, aiName)) {
-        setResponsePhase('thinking');
-        setStatus('Refining');
-        const firstResponseText = finalText || 'I could not generate a response.';
-        const repairAssistantId = `${assistantId}_repair`;
-        const responseOneMessage: ChatMessage = {
-          id: assistantId,
-          role: 'assistant',
-          text: `Response 1\n\n${firstResponseText}`,
-        };
-        const responseTwoPrefix = 'Response 2\n\n';
-        streamedText = '';
-        lastVisibleStreamText = '';
-        activeAssistantId = repairAssistantId;
-        activeResponsePrefix = responseTwoPrefix;
-        if (streamFlushTimer) {
-          clearTimeout(streamFlushTimer);
-          streamFlushTimer = null;
-        }
-        updateMessagesAndRef(current =>
-          [
-            ...current.map(item =>
-              item.id === assistantId ? responseOneMessage : item,
-            ),
-            {
-              id: repairAssistantId,
-              role: 'assistant' as const,
-              text: responseTwoPrefix,
-            },
-          ],
-        );
-
-        const repairResult = await context.completion(
-          {
-            messages: [
-              {
-                role: 'system',
-                content:
-                  [
-                    'Answer only the user question. No greeting. No self-introduction.',
-                    'If it is factual, define or explain it directly.',
-                    nextUserMemory ? `Known memory:\n${nextUserMemory}` : '',
-                    activeMemorySummary ? `Conversation memory:\n${activeMemorySummary}` : '',
-                  ].filter(Boolean).join('\n'),
-              },
-              {
-                role: 'user',
-                content: prompt,
-              },
-            ],
-            n_predict: 1024,
-            temperature: 0.45,
-            top_p: 0.85,
-            top_k: 40,
-            min_p: 0.05,
-            penalty_last_n: 64,
-            penalty_repeat: 1.03,
-            penalty_freq: 0,
-            dry_multiplier: 0,
-            stop: STOP_WORDS,
-            force_pure_content: true,
-          },
-          data => {
-            handleStreamToken(data);
-          },
-        );
-
-        flushStream(true);
-        wasInterrupted = stopRequestedRef.current || Boolean(repairResult.interrupted);
-        isTruncated = Boolean(repairResult.truncated) || Boolean(repairResult.stopped_limit);
-        finalText = getCompletionText(repairResult, streamedText);
-        if (wasInterrupted && !finalText.trim()) {
-          finalText =
-            lastVisibleStreamText ||
-            visibleGeneratedText(streamedText) ||
-            messagesRef.current.find(item => item.id === activeAssistantId)?.text ||
-            '';
-        }
-        finalAssistantMessages = [
-          responseOneMessage,
-          {
-            id: repairAssistantId,
-            role: 'assistant',
-            text: `${responseTwoPrefix}${finalText || 'I could not generate a response.'}`,
-          },
-        ];
-      }
-
       if (!wasInterrupted && isLikelyCorruptResponse(finalText)) {
         finalText = 'I got unstable output from the local model. Please tap send again and I will retry with a fresh pass.';
-      } else if (!wasInterrupted && shouldRepairResponse(prompt, finalText, aiName)) {
-        finalText = 'I got stuck on that reply. Ask it once more with a little more detail and I will answer directly.';
       }
 
-      finalAssistantMessages = finalAssistantMessages.map((message, index, all) =>
-        index === all.length - 1
-          ? {
-              ...message,
-              text:
-                all.length > 1
-                  ? `Response ${index + 1}\n\n${finalText || 'I could not generate a response.'}`
-                  : finalText || 'I could not generate a response.',
-              interrupted: wasInterrupted,
-              isTruncated: isTruncated,
-            }
-          : message,
-      );
+      finalAssistantMessages = [
+        {
+          id: assistantId,
+          role: 'assistant',
+          text: finalText || 'I could not generate a response.',
+          thoughtTimeMs: thoughtDuration,
+          totalTimeMs: totalDuration,
+          interrupted: wasInterrupted,
+          isTruncated: isTruncated,
+        },
+      ];
       const completeMessages = [
         ...baseMessages,
         userMessage,
@@ -3079,9 +3909,10 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         thinkingLines={item.id === liveAssistantId ? visibleThinkingLines : []}
         modelLogo={activeCatalogModel?.logo}
         onToggleThought={handleToggleThought}
+        userBubbleColor={userBubbleColor}
       />
     ),
-    [isThinkingFading, liveAssistantId, activeGenerationLabel, visibleThinkingLines, activeCatalogModel?.logo, handleToggleThought],
+    [isThinkingFading, liveAssistantId, activeGenerationLabel, visibleThinkingLines, activeCatalogModel?.logo, handleToggleThought, userBubbleColor],
   );
 
   const shouldShowEmptyOnboarding =
@@ -3116,6 +3947,26 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
     extrapolate: 'clamp',
   });
 
+  const menuBackgroundTranslateX = menuBackgroundSlide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -Math.min(windowWidth * 0.16, 56)],
+    extrapolate: 'clamp',
+  });
+
+  const menuBackgroundScale = menuBackgroundSlide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0.94],
+    extrapolate: 'clamp',
+  });
+
+  const menuBackgroundBorderRadius = menuBackgroundSlide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 18],
+    extrapolate: 'clamp',
+  });
+
+  const combinedTranslateX = Animated.add(infoBackgroundTranslateX, menuBackgroundTranslateX);
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -3123,30 +3974,37 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
       <Animated.View
         style={[
           styles.mainSurface,
-          {transform: [{translateX: infoBackgroundTranslateX}]},
+          {
+            borderRadius: menuBackgroundBorderRadius,
+            transform: [
+              {translateX: combinedTranslateX},
+              {scale: menuBackgroundScale},
+            ],
+          },
+          isEffortPopoverOpen && { zIndex: 9999, elevation: 9999 },
         ]}
         collapsable={false}
-        renderToHardwareTextureAndroid={Platform.OS === 'android' && isInfoTransitionActive}
-        shouldRasterizeIOS={Platform.OS === 'ios' && isInfoTransitionActive}>
+        renderToHardwareTextureAndroid={Platform.OS === 'android' && (isInfoTransitionActive || isContextTransitionActive || isMenuOpen)}
+        shouldRasterizeIOS={Platform.OS === 'ios' && (isInfoTransitionActive || isContextTransitionActive || isMenuOpen)}>
+        {isEffortPopoverOpen && (
+          <Pressable
+            style={styles.popoverFullOverlay}
+            onPress={closeEffortPopover}
+          />
+        )}
       <View style={[styles.header, {paddingTop: Platform.OS === 'android' ? Math.max(insets.top - 6, 2) : insets.top}]}>
         <TouchableOpacity
           style={styles.iconButton}
           onPressIn={dismissComposerKeyboard}
           onPress={openSideMenu}>
           <View style={styles.menuGlyph}>
-            <View style={[styles.menuGlyphLine, styles.menuGlyphLineTop]} />
-            <View style={[styles.menuGlyphLine, styles.menuGlyphLineMid]} />
-            <View style={[styles.menuGlyphLine, styles.menuGlyphLineBottom]} />
+            <ChevronLeft color="#F4F4F5" size={20} strokeWidth={2.5} style={{marginRight: 1}} />
           </View>
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.modelButton}
-          activeOpacity={0.82}
-          onPressIn={dismissComposerKeyboard}
-          onPress={() => {
-            dismissComposerKeyboard();
-            setShowModelSwitchAlert(true);
-          }}>
+          activeOpacity={1}
+          onPress={dismissComposerKeyboard}>
           <View style={styles.modelMark}>
             {activeCatalogModel?.logo ? (
               <Image
@@ -3215,7 +4073,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           isChatAtBottomRef.current = isAtBottom;
           if (isAtBottom) {
             userScrolledUpRef.current = false;
-          } else if (distanceFromBottom > 70) {
+          } else if (isChatScrollInteractingRef.current && distanceFromBottom > 70) {
             userScrolledUpRef.current = true;
           }
         }}
@@ -3302,6 +4160,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           {
             marginBottom: Platform.OS === 'android' ? androidKeyboardOffsetAnim : 0,
             paddingBottom: composerBottomPadding,
+            zIndex: isEffortPopoverOpen ? 10000 : 1,
+            elevation: isEffortPopoverOpen ? 10000 : 1,
           },
         ]}>
         {hasCodingContentInThread ? (
@@ -3331,9 +4191,12 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           </View>
         ) : (
           <>
-            <View style={[styles.unifiedComposerCard, isPerformanceMode && styles.unifiedComposerCardFast]}>
+            <View
+              onStartShouldSetResponder={() => true}
+              style={[styles.unifiedComposerCard, isPerformanceMode && styles.unifiedComposerCardFast, isEffortPopoverOpen && { zIndex: 10000, elevation: 10000 }]}>
               <TouchableOpacity
                 activeOpacity={0.82}
+                onPressIn={dismissComposerKeyboard}
                 onPress={toggleEffortPopover}
                 style={[styles.composerHeaderPanel, isPerformanceMode && styles.composerHeaderPanelFast]}>
                 <View style={styles.composerHeaderLeft}>
@@ -3351,6 +4214,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
 
               {isEffortPopoverOpen && (
                 <Animated.View
+                  onStartShouldSetResponder={() => true}
                   style={[
                     styles.inlineEffortPanel,
                     {
@@ -3439,36 +4303,102 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
                 </Animated.View>
               )}
 
+              {attachedImage && (
+                <View style={styles.attachmentPreviewContainer}>
+                  <Image source={{uri: attachedImage.uri}} style={styles.attachmentThumbnail} />
+                  <View style={styles.attachmentTextGroup}>
+                    <Text style={styles.attachmentTitle} numberOfLines={1}>
+                      {attachedImage.fileName || 'Photo attachment'}
+                    </Text>
+                    {attachedImage.isScanning ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                        <Loader size={16} trackColor="#89B4FA" />
+                        <Text style={[styles.attachmentSubtitle, { color: '#89B4FA' }]}>
+                          Scanning image...
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
+                        <Check color="#34C759" size={11} strokeWidth={2.8} />
+                        <Text style={styles.attachmentSubtitle} numberOfLines={1}>
+                          {formatFileSize(attachedImage.fileSize)} •
+                        </Text>
+                        <TouchableOpacity
+                          activeOpacity={0.7}
+                          onPress={openVisionResultSheet}
+                          style={styles.viewVisionLinkBtn}>
+                          <Text style={styles.viewVisionLinkText}>View Vision Result</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                  <TouchableOpacity
+                    style={styles.removeAttachmentBtn}
+                    activeOpacity={0.78}
+                    onPress={() => setAttachedImage(null)}>
+                    <X color="#8E8E93" size={16} strokeWidth={2.4} />
+                  </TouchableOpacity>
+                </View>
+              )}
+
               <View style={styles.composerInnerRow}>
+                <TouchableOpacity
+                  style={styles.attachButton}
+                  activeOpacity={0.7}
+                  onPress={handleAttachPress}>
+                  <Plus color="#FFFFFF" size={18} strokeWidth={2.4} />
+                </TouchableOpacity>
                 <TextInput
                   ref={inputRef}
                   value={input}
                   onChangeText={setInput}
-                  placeholder="Ask Rivo offline"
+                  placeholder="ask rivo agent"
                   placeholderTextColor="#B5B5B8"
-                  style={styles.input}
+                  style={[styles.input, {color: inputTextColor}]}
                   editable={!isMenuOpen && !isInfoOpen}
-                  showSoftInputOnFocus={!isMenuOpen && !isInfoOpen}
                   multiline
-                  maxLength={2500}
-                  onFocus={() => scrollToEnd(true, true)}
-                  blurOnSubmit={true}
+                  onFocus={() => {
+                    if (isChatAtBottomRef.current) {
+                      scrollToEnd(true);
+                    }
+                  }}
+                  onPressIn={() => {
+                    if (isChatAtBottomRef.current) {
+                      scrollToEnd(true);
+                    }
+                  }}
+                  onKeyPress={(e: any) => {
+                    if (e.nativeEvent.key === 'Enter' && !e.nativeEvent.shiftKey) {
+                      if (!isGenerating && !attachedImage?.isScanning && input.trim()) {
+                        e.preventDefault?.();
+                        sendMessage();
+                      }
+                    }
+                  }}
                   onSubmitEditing={() => {
-                    if (!isGenerating) {
+                    if (!isGenerating && !attachedImage?.isScanning && input.trim()) {
                       sendMessage();
                     }
                   }}
+                  submitBehavior="submit"
+                  blurOnSubmit={false}
+                  returnKeyType="send"
                   enterKeyHint="send"
                 />
                 <Animated.View style={{transform: [{scale: sendScale}]}}>
                   <TouchableOpacity
-                    style={styles.sendButton}
+                    disabled={attachedImage?.isScanning}
+                    style={[
+                      styles.sendButton,
+                      {backgroundColor: sendButtonColor},
+                      attachedImage?.isScanning && { opacity: 0.38, backgroundColor: 'rgba(255, 255, 255, 0.2)' },
+                    ]}
                     onPress={isGenerating ? stopGeneration : () => sendMessage()}
                     activeOpacity={0.84}>
                     {isGenerating ? (
-                      <Square color="#000000" size={12} fill="#000000" />
+                      <Square color={getContrastColor(sendButtonColor)} size={12} fill={getContrastColor(sendButtonColor)} />
                     ) : (
-                      <ArrowUp color="#000000" size={18} strokeWidth={2.8} />
+                      <ArrowUp color={getContrastColor(sendButtonColor)} size={18} strokeWidth={2.8} />
                     )}
                   </TouchableOpacity>
                 </Animated.View>
@@ -3491,7 +4421,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         style={[
           styles.sideMenu,
           {
-            paddingTop: insets.top + 16,
+            paddingTop: Platform.OS === 'android' ? Math.max(insets.top + 10, 24) : Math.max(insets.top + 10, 20),
             paddingBottom: Math.max(composerBottomInset + 14, 24),
             transform: [{translateX: menuX}],
           },
@@ -3502,73 +4432,176 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               <Image source={logoSource} style={styles.menuBrandLogo} resizeMode="contain" />
             </View>
             <Text style={styles.menuBrandText}>
-              Rivo <Text style={styles.menuBrandTextLight}>Agent</Text>
+              Rivo <Text style={styles.menuBrandTextYellow}>Agent</Text>
             </Text>
           </View>
-          <TouchableOpacity style={styles.iconButton} onPress={() => setIsMenuOpen(false)}>
-            <Image source={closeSource} style={styles.closeIcon} resizeMode="contain" />
+          <TouchableOpacity
+            style={styles.closeMenuButton}
+            activeOpacity={0.78}
+            onPress={() => setIsMenuOpen(false)}>
+            <ChevronRight color="#F4F4F5" size={18} strokeWidth={2.5} style={{marginLeft: 1}} />
           </TouchableOpacity>
         </View>
 
-        <View style={styles.menuItems}>
-          {MENU_ITEMS.map(({label, isActive}) => (
-            <TouchableOpacity
-              key={label}
-              activeOpacity={0.78}
-              style={[styles.menuItem, isActive && styles.menuItemActive]}
-              onPress={label === 'Fresh thread' ? newChat : undefined}>
-              <View style={styles.menuItemIcon}>
-                <Image source={newSource} style={styles.newIcon} resizeMode="contain" />
-              </View>
-              <Text style={[styles.menuText, isActive && styles.menuTextActive]}>{label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        <ScrollView
+          style={styles.menuScrollView}
+          contentContainerStyle={styles.menuScrollViewContent}
+          showsVerticalScrollIndicator={false}
+          bounces={true}>
+          
+          {/* Fresh Thread Action Button */}
+          <TouchableOpacity
+            activeOpacity={0.82}
+            style={styles.newChatButton}
+            onPress={newChat}>
+            <View style={styles.newChatIconBadge}>
+              <Plus color="#FFFFFF" size={16} strokeWidth={2.8} />
+            </View>
+            <Text style={styles.newChatText}>Fresh thread</Text>
+          </TouchableOpacity>
 
-        <Text style={styles.recentsTitle}>Local history</Text>
-        <Text style={styles.recentsLimitText}>You can only create 7 threads.</Text>
-        <View style={styles.recentsList}>
-          {recentThreads.length === 0 ? (
-            <Text style={styles.emptyHistory}>Your chats save here automatically.</Text>
-          ) : recentThreads.map(thread => {
-            const isActiveThread = thread.id === activeThreadId;
-
-            return (
-              <View
-                key={thread.id}
-                style={[
-                  styles.recentItem,
-                  isActiveThread && styles.recentItemActive,
-                ]}>
-                <View style={styles.recentRow}>
-                  <TouchableOpacity
-                    activeOpacity={0.78}
-                    style={styles.recentMain}
-                    onPress={() => loadThread(thread)}>
-                    <Text
-                      style={[
-                        styles.recentText,
-                        isActiveThread && styles.recentTextActive,
-                      ]}
-                      numberOfLines={1}>
-                      {thread.title}
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    activeOpacity={0.78}
-                    style={styles.historyDots}
-                    onPress={() => setPendingDeleteThread(thread)}>
-                    <MoreHorizontal
-                      color={isActiveThread ? '#E4E4E7' : '#A1A1AA'}
-                      size={18}
-                      strokeWidth={2.4}
-                    />
-                  </TouchableOpacity>
+          {/* Custom Theme & Accent Panel */}
+          <View style={styles.themeCustomizerCard}>
+            <View style={styles.themeHeaderRow}>
+              <View style={styles.themeHeaderTitleGroup}>
+                <Palette color="#FFFFFF" size={15} strokeWidth={2.2} />
+                <Text style={styles.themeTitleText}>Appearance & Colors</Text>
+                <View style={styles.themeLivePreviewRow}>
+                  <View style={[styles.themePreviewDot, {backgroundColor: userBubbleColor}]} />
+                  <View style={[styles.themePreviewDot, {backgroundColor: sendButtonColor}]} />
                 </View>
               </View>
-            );
-          })}
-        </View>
+              {(sendButtonColor !== '#FFFFFF' || userBubbleColor !== '#0AA550') && (
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  style={styles.themeResetButton}
+                  onPress={() => {
+                    changeSendButtonColor('#FFFFFF');
+                    changeUserBubbleColor('#0AA550');
+                  }}>
+                  <Text style={styles.themeResetText}>Reset</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* User Message Bubble Color Selector */}
+            <View style={styles.themeSection}>
+              <Text style={styles.themeSubLabel}>USER MESSAGE BUBBLE</Text>
+              <View style={styles.colorSwatchesRow}>
+                {USER_BUBBLE_COLORS.map(color => {
+                  const isSelected = userBubbleColor.toLowerCase() === color.hex.toLowerCase();
+                  return (
+                    <AnimatedColorSwatch
+                      key={`bubble-${color.hex}`}
+                      hex={color.hex}
+                      isSelected={isSelected}
+                      onPress={() => changeUserBubbleColor(color.hex)}
+                    />
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* Send Button Color Selector */}
+            <View style={styles.themeSection}>
+              <Text style={styles.themeSubLabel}>SEND BUTTON ACCENT</Text>
+              <View style={styles.colorSwatchesRow}>
+                {SEND_BUTTON_COLORS.map(color => {
+                  const isSelected = sendButtonColor.toLowerCase() === color.hex.toLowerCase();
+                  return (
+                    <AnimatedColorSwatch
+                      key={`send-${color.hex}`}
+                      hex={color.hex}
+                      isSelected={isSelected}
+                      onPress={() => changeSendButtonColor(color.hex)}
+                    />
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+
+          {/* History Header & List */}
+          <View style={styles.historyHeaderRow}>
+            <Text style={styles.recentsTitle}>Local history</Text>
+            <View style={styles.recentsCountBadge}>
+              <Text style={styles.recentsCountText}>
+                <Text style={styles.recentsCountActiveNum}>{recentThreads.length}</Text>
+                <Text style={styles.recentsCountMuted}> / {MAX_THREADS} threads</Text>
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.recentsList}>
+            {recentThreads.length === 0 ? (
+              <Text style={styles.emptyHistory}>Your chats save here automatically.</Text>
+            ) : (
+              recentThreads.map(thread => {
+                const isActiveThread = thread.id === activeThreadId;
+
+                return (
+                  <View
+                    key={thread.id}
+                    style={[
+                      styles.recentItem,
+                      isActiveThread && styles.recentItemActive,
+                    ]}>
+                    <View style={styles.recentRow}>
+                      <TouchableOpacity
+                        activeOpacity={0.78}
+                        style={styles.recentMain}
+                        onPress={() => loadThread(thread)}>
+                        <MessageCircle
+                          color={isActiveThread ? '#FFFFFF' : '#8E8E93'}
+                          size={17}
+                          strokeWidth={2}
+                          style={{marginRight: 10}}
+                        />
+                        <Text
+                          style={[
+                            styles.recentText,
+                            isActiveThread && styles.recentTextActive,
+                          ]}
+                          numberOfLines={1}>
+                          {thread.title}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        activeOpacity={0.78}
+                        style={styles.historyDots}
+                        onPress={() => setPendingDeleteThread(thread)}>
+                        <MoreHorizontal
+                          color={isActiveThread ? '#E4E4E7' : '#71717A'}
+                          size={18}
+                          strokeWidth={2.4}
+                        />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </View>
+        </ScrollView>
+
+        {visionInstalledForMenu && (
+          <TouchableOpacity
+            style={styles.deleteVisionRow}
+            activeOpacity={0.78}
+            onPress={() => setShowDeleteVisionAlert(true)}>
+            <View style={styles.deleteVisionIconWrap}>
+              <Image
+                source={require('../assets/models/qwen.png')}
+                style={styles.profileModelLogo}
+                resizeMode="contain"
+              />
+            </View>
+            <View style={styles.deleteVisionCopy}>
+              <Text style={styles.deleteVisionText}>Delete Vision Model</Text>
+              <Text style={styles.deleteVisionSubtext}>Remove from device storage</Text>
+            </View>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={styles.profileRow}
@@ -3582,15 +4615,17 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
                 resizeMode="contain"
               />
             ) : (
-              <BrainCircuit color="#34C759" size={24} strokeWidth={2.2} />
+              <BrainCircuit color="#34C759" size={22} strokeWidth={2.2} />
             )}
           </View>
           <View style={styles.profileCopy}>
             <Text style={styles.profileName}>{profileDisplayName}</Text>
-            <Text style={styles.profilePlan}>Device-only memory</Text>
+            <View style={styles.profileStatusRow}>
+              <Text style={styles.profilePlan}>100% Local Memory • No Cloud</Text>
+            </View>
           </View>
           <View style={styles.logoutIconBox}>
-            <LogOut color="#FFFFFF" size={18} strokeWidth={2.2} />
+            <LogOut color="#A1A1AA" size={17} strokeWidth={2.2} />
           </View>
         </TouchableOpacity>
       </Animated.View>
@@ -3603,8 +4638,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           style={[
             styles.contextPanel,
             {
-              paddingTop: insets.top + 12,
-              paddingBottom: Math.max(composerBottomInset + 16, 24),
+              paddingTop: Platform.OS === 'android' ? Math.max(insets.top - 6, 2) : insets.top,
+              paddingBottom: Math.max(insets.bottom, 12),
               transform: [{translateX: contextX}],
             },
           ]}>
@@ -3873,8 +4908,8 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
           style={[
             styles.infoPanel,
             {
-              paddingTop: insets.top + 12,
-              paddingBottom: Math.max(composerBottomInset + 16, 24),
+              paddingTop: Platform.OS === 'android' ? Math.max(insets.top - 6, 2) : insets.top,
+              paddingBottom: Math.max(insets.bottom, 12),
               transform: [{translateX: infoX}],
             },
           ]}>
@@ -3885,10 +4920,9 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
               onPress={closeInfoPanel}>
               <Image source={backSource} style={styles.infoBackIcon} resizeMode="contain" />
             </TouchableOpacity>
-            <View style={styles.infoHeaderCopy}>
-              <Text style={styles.infoEyebrow}>ABOUT RIVO</Text>
-              <Text style={styles.infoTitle}>Local AI details</Text>
-            </View>
+              <Text style={styles.infoTitle}>
+                Local <Text style={{color: '#D4FF00'}}>AI details</Text>
+              </Text>
           </View>
 
           <ScrollView
@@ -3996,6 +5030,29 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         </Animated.View>
       )}
       <ProfessionalAlert
+        visible={showInstallVisionAlert}
+        title="No vision model installed"
+        message={`${QWEN_VISION_MODEL.name} is required to analyze images (${formatVisionModelSize(
+          QWEN_VISION_MODEL.byteSize + QWEN_VISION_MODEL.mmprojByteSize,
+        )}). Install it now?`}
+        cancelLabel="No"
+        confirmLabel="Yes, install"
+        iconName="eye"
+        onClose={() => setShowInstallVisionAlert(false)}
+        onConfirm={handleConfirmInstallVision}
+      />
+      <ProfessionalAlert
+        visible={showDeleteVisionAlert}
+        title="Delete Vision Model?"
+        message="This will remove the vision model from your device. You can re-install it later."
+        cancelLabel="Cancel"
+        confirmLabel="Delete"
+        isDestructive
+        iconName="trash-2"
+        onClose={() => setShowDeleteVisionAlert(false)}
+        onConfirm={handleDeleteVisionModel}
+      />
+      <ProfessionalAlert
         visible={showModelSwitchAlert}
         title="Model locked"
         message="You can't switch models from here."
@@ -4022,6 +5079,7 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         visible={showLogoutConfirmAlert}
         title="Confirm Log Out"
         message="Are you sure you want to log out? This will cause your account to get deleted and all data to be erased from local caches. You will also need to download new models again."
+        boldSuffix="This will not delete your vision model."
         cancelLabel="No"
         confirmLabel="Yes"
         isDestructive
@@ -4040,6 +5098,91 @@ const ChatScreen: React.FC<Props> = ({onBack}) => {
         onClose={() => setPendingDeleteThread(null)}
         onConfirm={confirmDeleteThread}
       />
+
+      {/* Vision Result Full Smooth Bottom Sheet Panel */}
+      {isVisionResultSheetOpen && (
+        <Animated.View style={[styles.visionSheetOverlay, { opacity: visionSheetAnim }]}>
+          <Pressable style={{ flex: 1 }} onPress={closeVisionResultSheet} />
+          <Animated.View
+            renderToHardwareTextureAndroid
+            shouldRasterizeIOS
+            style={[
+              styles.visionSheetCard,
+              {
+                transform: [
+                  {
+                    translateY: visionSheetAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [450, 0],
+                    }),
+                  },
+                ],
+              },
+            ]}>
+            <View style={styles.visionSheetHandleBar} />
+            <View style={styles.visionSheetHeader}>
+              <View style={styles.visionSheetTitleGroup}>
+                <Eye color="#89B4FA" size={18} strokeWidth={2.2} />
+                <View>
+                  <Text style={styles.visionSheetTitle}>Vision Model Extraction</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.visionSheetCloseBtn}
+                activeOpacity={0.8}
+                onPress={closeVisionResultSheet}>
+                <X color="#8E8E93" size={16} strokeWidth={2.4} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              style={styles.visionSheetScroll}
+              contentContainerStyle={styles.visionSheetScrollContent}
+              showsVerticalScrollIndicator={false}>
+              <Text style={styles.visionSheetBodyText}>
+                {attachedImage?.visionSummary || 'No visual data extracted.'}
+              </Text>
+            </ScrollView>
+
+            <View style={styles.visionSheetFooter}>
+              {attachedImage?.visionSummary?.includes('[VISION SYSTEM NOTICE]') ? (
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  style={[styles.copyVisionResultBtn, { backgroundColor: '#34C759' }]}
+                  onPress={() => {
+                    closeVisionResultSheet();
+                    handleConfirmInstallVision();
+                  }}>
+                  <Eye color="#FFFFFF" size={16} strokeWidth={2.5} />
+                  <Text style={styles.copyVisionResultText}>Install Qwen2-VL Vision Model</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  activeOpacity={0.82}
+                  style={[
+                    styles.copyVisionResultBtn,
+                    copiedVisionToast && {backgroundColor: '#34C759'},
+                  ]}
+                  onPress={() => {
+                    lightHaptic();
+                    setClipboardText(attachedImage?.visionSummary || '');
+                    setCopiedVisionToast(true);
+                    setTimeout(() => setCopiedVisionToast(false), 2000);
+                  }}>
+                  {copiedVisionToast ? (
+                    <Check color="#FFFFFF" size={15} strokeWidth={2.5} />
+                  ) : (
+                    <Copy color="#FFFFFF" size={15} strokeWidth={2.5} />
+                  )}
+                  <Text style={styles.copyVisionResultText}>
+                    {copiedVisionToast ? 'Copied!' : 'Copy Full Observation'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </Animated.View>
+        </Animated.View>
+      )}
     </KeyboardAvoidingView>
   );
 };
@@ -4052,6 +5195,7 @@ const styles = StyleSheet.create({
   mainSurface: {
     flex: 1,
     backgroundColor: '#000000',
+    overflow: 'hidden',
   },
   header: {
     position: 'absolute',
@@ -4190,7 +5334,7 @@ const styles = StyleSheet.create({
     elevation: 30,
   },
   infoHeader: {
-    minHeight: 58,
+    minHeight: 48,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
@@ -4646,12 +5790,68 @@ const styles = StyleSheet.create({
   paragraphSpacer: {
     height: 6,
   },
-  markdownHeading: {
+  markdownH1: {
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  markdownH1Text: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 18,
     fontFamily: 'SF-Pro-Rounded-Bold',
+    lineHeight: 24,
+  },
+  markdownH2: {
     marginTop: 8,
     marginBottom: 4,
+  },
+  markdownH2Text: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    lineHeight: 22,
+  },
+  markdownH3: {
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  markdownH3Text: {
+    color: '#E4E4E7',
+    fontSize: 15,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    lineHeight: 20,
+  },
+  blockquoteContainer: {
+    borderLeftWidth: 3,
+    borderLeftColor: '#34C759',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginVertical: 4,
+  },
+  blockquoteText: {
+    color: '#D4D4D8',
+    fontStyle: 'italic',
+  },
+  listRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginVertical: 2,
+    paddingLeft: 2,
+  },
+  listNumber: {
+    color: '#34C759',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    marginRight: 6,
+    lineHeight: 22,
+  },
+  listContent: {
+    flex: 1,
+    color: '#E4E4E7',
+    fontSize: 15,
+    fontFamily: 'SF-Pro-Rounded-Regular',
+    lineHeight: 22,
   },
   bulletRow: {
     flexDirection: 'row',
@@ -4801,6 +6001,29 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  visionCapsuleContainer: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(10, 132, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(10, 132, 255, 0.25)',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 8,
+    gap: 6,
+  },
+  visionCapsuleScanning: {
+    backgroundColor: 'rgba(52, 199, 89, 0.08)',
+    borderColor: 'rgba(52, 199, 89, 0.25)',
+  },
+  visionCapsuleText: {
+    color: '#0A84FF',
+    fontSize: 12.5,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    letterSpacing: 0.1,
   },
   thinkingTitleRow: {
     flexDirection: 'row',
@@ -4954,18 +6177,174 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     left: 0,
+    right: 0,
     bottom: 0,
-    width: '64%',
-    minWidth: 330,
-    backgroundColor: '#000000',
-    paddingHorizontal: 14,
+    width: '100%',
+    backgroundColor: '#0A0A0C',
+    paddingHorizontal: 16,
     zIndex: 20,
+  },
+  menuScrollView: {
+    width: '100%',
+  },
+  menuScrollViewContent: {
+    paddingBottom: 20,
+  },
+  closeMenuButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#141416',
+    borderWidth: 1,
+    borderColor: '#28282C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#FFFFFF',
+    shadowOffset: {width: 0, height: 0},
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+  },
+  newChatButton: {
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: '#161618',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    marginBottom: 14,
+  },
+  newChatIconBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#0AA550',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  newChatText: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    marginLeft: 10,
+  },
+  newChatTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(52, 199, 89, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(52, 199, 89, 0.25)',
+  },
+  newChatTagText: {
+    color: '#34C759',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  themeCustomizerCard: {
+    backgroundColor: '#141416',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#242428',
+  },
+  themeHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  themeHeaderTitleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  themePaletteIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(52, 199, 89, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  themeLivePreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1C1C1E',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+    marginLeft: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  themePreviewDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  themeTitleText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    letterSpacing: 0.2,
+  },
+  themeResetButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(52, 199, 89, 0.12)',
+  },
+  themeResetText: {
+    color: '#34C759',
+    fontSize: 12,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  themeSection: {
+    marginTop: 10,
+  },
+  themeSubLabel: {
+    color: '#71717A',
+    fontSize: 10,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    letterSpacing: 0.6,
+    marginBottom: 8,
+  },
+  colorSwatchesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    flexWrap: 'wrap',
+  },
+  colorSwatchCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+  },
+  colorSwatchSelected: {
+    borderWidth: 2.5,
+    shadowColor: '#FFFFFF',
+    shadowOffset: {width: 0, height: 0},
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
   },
   menuTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 18,
+    marginTop: 6,
+    marginBottom: 16,
   },
   menuBrand: {
     flexDirection: 'row',
@@ -4992,160 +6371,200 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
-  menuBrandTextLight: {
+  menuBrandTextYellow: {
+    color: '#D4FF00',
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
-  menuItems: {
-    gap: 4,
-    marginBottom: 26,
-  },
-  menuItem: {
-    height: 44,
-    borderRadius: 14,
+  historyHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 10,
-  },
-  menuItemActive: {
-    backgroundColor: '#FFFFFF',
-  },
-  menuItemIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#000000',
-  },
-  newIcon: {
-    width: 16,
-    height: 16,
-  },
-  menuText: {
-    flex: 1,
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontFamily: 'SF-Pro-Rounded-Bold',
-    marginLeft: 12,
-  },
-  menuTextActive: {
-    color: '#000000',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingHorizontal: 2,
   },
   recentsTitle: {
     color: '#FFFFFF',
-    fontSize: 17,
+    fontSize: 15,
     fontFamily: 'SF-Pro-Rounded-Bold',
-    marginBottom: 5,
-    paddingHorizontal: 4,
   },
-  recentsLimitText: {
-    color: '#8E8E93',
-    fontSize: 13,
-    fontFamily: 'SF-Pro-Rounded-Semibold',
-    lineHeight: 18,
-    marginBottom: 14,
-    paddingHorizontal: 4,
+  recentsCountBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#141416',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#28282C',
+    gap: 6,
+  },
+  recentsCountDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#34C759',
+  },
+  recentsCountText: {
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Medium',
+  },
+  recentsCountActiveNum: {
+    color: '#FFFFFF',
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  recentsCountMuted: {
+    color: '#71717A',
+    fontFamily: 'SF-Pro-Rounded-Medium',
   },
   recentsList: {
     flex: 1,
   },
   emptyHistory: {
-    color: '#8E8E93',
-    fontSize: 15,
-    fontFamily: 'SF-Pro-Rounded-Semibold',
-    lineHeight: 21,
+    color: '#71717A',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Medium',
     paddingHorizontal: 4,
+    paddingVertical: 12,
   },
   recentItem: {
     marginBottom: 4,
-    borderRadius: 18,
+    borderRadius: 12,
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
   recentItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: '#1A1A1E',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   recentRow: {
-    minHeight: 46,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
   },
   recentMain: {
     flex: 1,
-    minHeight: 46,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 30,
+    paddingLeft: 10,
     paddingRight: 8,
   },
   recentText: {
     flex: 1,
-    color: '#F4F4F5',
-    fontSize: 16,
+    color: '#A1A1AA',
+    fontSize: 14,
     fontFamily: 'SF-Pro-Rounded-Regular',
   },
   recentTextActive: {
     color: '#FFFFFF',
-    fontFamily: 'SF-Pro-Rounded-Semibold',
+    fontFamily: 'SF-Pro-Rounded-Bold',
   },
   historyDots: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  deleteVisionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 60,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#242428',
+    backgroundColor: '#141416',
+    paddingHorizontal: 12,
+    marginTop: 8,
+  },
+  deleteVisionIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1C1C1E',
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  deleteVisionCopy: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  deleteVisionText: {
+    color: '#FF453A',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  deleteVisionSubtext: {
+    color: '#71717A',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Medium',
+    marginTop: 1,
   },
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    minHeight: 64,
-    borderRadius: 16,
+    minHeight: 60,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderColor: '#242428',
+    backgroundColor: '#141416',
     paddingHorizontal: 12,
     marginTop: 8,
   },
   profileIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#FFFFFF',
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1C1C1E',
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  profileModelLogo: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   profileCopy: {
     flex: 1,
   },
   profileName: {
     color: '#FFFFFF',
-    fontSize: 15,
-    fontFamily: 'SF-Pro-Rounded-Semibold',
-    lineHeight: 19,
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  profileStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 1,
+  },
+  profileStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#34C759',
+    marginRight: 5,
   },
   profilePlan: {
-    color: '#8E8E93',
-    fontSize: 12,
+    color: '#71717A',
+    fontSize: 11,
     fontFamily: 'SF-Pro-Rounded-Medium',
-    lineHeight: 16,
-    marginTop: 2,
   },
   logoutIconBox: {
     width: 32,
     height: 32,
-    borderRadius: 10,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 16,
+    backgroundColor: '#1C1C1E',
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
+  },
+  profileModelLogo: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
   },
   profileTag: {
     height: 24,
@@ -5178,11 +6597,11 @@ const styles = StyleSheet.create({
     elevation: 30,
   },
   contextHeader: {
-    minHeight: 58,
+    minHeight: 48,
     paddingHorizontal: 18,
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 0,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.05)',
   },
@@ -5305,7 +6724,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   multilineInput: {
-    height: 100,
+    height: 72,
     textAlignVertical: 'top',
     paddingTop: 10,
   },
@@ -5495,8 +6914,8 @@ const styles = StyleSheet.create({
   },
   popoverFullOverlay: {
     ...StyleSheet.absoluteFill,
-    zIndex: 9999,
-    elevation: 9999,
+    zIndex: 100,
+    elevation: 100,
   },
   popoverFullBackdrop: {
     ...StyleSheet.absoluteFill,
@@ -5675,13 +7094,218 @@ const styles = StyleSheet.create({
     color: '#34C759',
     fontFamily: 'SF-Pro-Rounded-Bold',
   },
+  attachButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#2A2A2D',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
   composerInnerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 16,
+    paddingLeft: 6,
     paddingRight: 6,
     paddingVertical: 4,
     minHeight: 46,
+  },
+  userImageBubbleCard: {
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    overflow: 'hidden',
+    maxWidth: 275,
+    borderRadius: 20,
+  },
+  userImageMessageWrapper: {
+    width: '100%',
+    overflow: 'hidden',
+  },
+  userImageFrame: {
+    position: 'relative',
+    width: 275,
+    height: 185,
+    backgroundColor: '#090A0E',
+    overflow: 'hidden',
+  },
+  userBubbleImage: {
+    width: '100%',
+    height: '100%',
+  },
+  imageBadgeChip: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+  },
+  imageBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+  },
+  userImageCaptionText: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: '#FFFFFF',
+  },
+  attachmentPreviewContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#262629',
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 8,
+    marginHorizontal: 10,
+    marginTop: 8,
+    marginBottom: 2,
+  },
+  attachmentThumbnail: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    marginRight: 10,
+    backgroundColor: '#1C1C1E',
+  },
+  attachmentTextGroup: {
+    flex: 1,
+  },
+  attachmentTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  attachmentSubtitle: {
+    color: 'rgba(255, 255, 255, 0.55)',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    marginTop: 2,
+  },
+  removeAttachmentBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  viewVisionLinkBtn: {
+    paddingVertical: 1,
+    paddingHorizontal: 2,
+    marginLeft: 2,
+  },
+  viewVisionLinkText: {
+    color: '#89B4FA',
+    fontSize: 11,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+    textDecorationLine: 'underline',
+  },
+  visionSheetOverlay: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 99999,
+    elevation: 99999,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'flex-end',
+  },
+  visionSheetCard: {
+    backgroundColor: '#1C1C1E',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 28,
+    maxHeight: '80%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -8 },
+    shadowOpacity: 0.5,
+    shadowRadius: 18,
+    elevation: 24,
+  },
+  visionSheetHandleBar: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  visionSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 12,
+  },
+  visionSheetTitleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  visionSheetTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: 'SF-Pro-Rounded-Bold',
+  },
+  visionSheetSubtitle: {
+    color: '#89B4FA',
+    fontSize: 11.5,
+    fontFamily: 'SF-Pro-Rounded-Semibold',
+    marginTop: 1,
+  },
+  visionSheetCloseBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  visionSheetScroll: {
+    maxHeight: 280,
+  },
+  visionSheetScrollContent: {
+    paddingVertical: 8,
+  },
+  visionSheetBodyText: {
+    color: '#D1D1D6',
+    fontSize: 13.5,
+    lineHeight: 20,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  visionSheetFooter: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  copyVisionResultBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0A84FF',
+    paddingVertical: 12,
+    borderRadius: 14,
+    gap: 8,
+  },
+  copyVisionResultText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontFamily: 'SF-Pro-Rounded-Bold',
   },
 });
 

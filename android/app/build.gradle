@@ -94,8 +94,8 @@ android {
         applicationId "com.rivoapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 3
+        versionName "3.0.0"
     }
     signingConfigs {
         debug {
@@ -119,13 +119,7 @@ android {
     }
     packagingOptions {
         jniLibs {
-            // Keep the base llama CPU runtime for emulator/dev installs.
-            // The optimized OpenCL/Hexagon/i8mm variants are large and can be
-            // enabled later for release builds targeting real devices.
-            excludes += [
-                "**/librnllama_v8*.so",
-                "**/librnllama_jni_v8*.so"
-            ]
+            useLegacyPackaging = true
         }
     }
 }

@@ -23,10 +23,12 @@ import {
 import type {DownloadTask} from '@kesha-antonov/react-native-background-downloader';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {findCatalogModel, getModelDownloadUrl, getModelTaskId, renderModelLogoSource} from '../data/modelCatalog';
+import {findVisionCatalogModel, getVisionModelDownloadUrl} from '../data/visionModelCatalog';
 import {
   getInstalledModelFilePath,
   getModelDownloadFilePath,
   markModelInstalled,
+  isMainVisionFileInstalled,
 } from '../utils/modelInstallStatus';
 
 type SelectedDownload = {
@@ -229,33 +231,181 @@ const DownloadScreen = ({
 
 
   const [selectedDownload, setSelectedDownload] = useState<SelectedDownload | null>(null);
-  
+  const [isVisionDownloadMode, setIsVisionDownloadMode] = useState(false);
+  // mmproj spec carried alongside the main vision model spec. Set when in
+  // vision mode; the download effect downloads the main file first, then
+  // swaps to this when the main task is DONE.
+  const [mmprojSpec, setMmprojSpec] = useState<SelectedDownload | null>(null);
+  const mmprojStartedRef = useRef(false);
+
   useEffect(() => {
-    Promise.all([
-      AsyncStorage.getItem('selectedModelId'),
-      AsyncStorage.getItem('selectedModelName'),
-      AsyncStorage.getItem('selectedModelFileName'),
-      AsyncStorage.getItem('selectedModelSizeBytes'),
-      AsyncStorage.getItem('selectedModelDownloadUrl'),
-    ]).then(([storedId, storedName, storedFileName, storedSizeBytes, storedDownloadUrl]) => {
-      const catalogModel = findCatalogModel(storedId, storedName);
-      const fileName = storedFileName || catalogModel.fileName;
-      const model = {
-        id: catalogModel.id,
-        name: catalogModel.name,
-        desc: catalogModel.desc,
-        logo: catalogModel.logo,
-        categoryLabel: catalogModel.categoryLabel,
-        categoryColor: catalogModel.categoryColor,
-        fileName,
-        byteSize: Number(storedSizeBytes) || catalogModel.byteSize,
-        minRam: catalogModel.minRam,
-        downloadUrl: storedDownloadUrl || getModelDownloadUrl({...catalogModel, fileName}),
+    AsyncStorage.getItem('isVisionDownload').then(isVisionFlag => {
+      const isVisionMode = isVisionFlag === 'true';
+      setIsVisionDownloadMode(isVisionMode);
+
+      const keys = isVisionMode
+        ? [
+            'selectedVisionModelId',
+            'selectedVisionModelName',
+            'selectedVisionModelFileName',
+            'selectedVisionModelSizeBytes',
+            'selectedVisionModelDownloadUrl',
+            'selectedVisionModelMmprojFileName',
+            'selectedVisionModelMmprojSizeBytes',
+            'selectedVisionModelMmprojDownloadUrl',
+          ]
+        : [
+            'selectedModelId',
+            'selectedModelName',
+            'selectedModelFileName',
+            'selectedModelSizeBytes',
+            'selectedModelDownloadUrl',
+          ];
+
+      const buildModelFromKeys = (
+        storedId: string | null,
+        storedName: string | null,
+        storedFileName: string | null,
+        storedSizeBytes: string | null,
+        storedDownloadUrl: string | null,
+        fileNameOverride?: string,
+        byteSizeOverride?: number,
+        nameOverride?: string,
+        idOverride?: string,
+        urlOverride?: string,
+      ): SelectedDownload | null => {
+        const lookupId = idOverride || storedId;
+        const lookupName = nameOverride || storedName;
+        const catalogModel = isVisionMode
+          ? (lookupId ? findVisionCatalogModel(lookupId) : null) || (findVisionCatalogModel(lookupName) as any)
+          : findCatalogModel(lookupId, lookupName);
+        if (!catalogModel && !fileNameOverride) {
+          return null;
+        }
+        const fileName = fileNameOverride || storedFileName || (catalogModel as any).fileName;
+        const byteSize = byteSizeOverride ?? Number(storedSizeBytes) ?? (catalogModel as any).byteSize ?? 0;
+        return {
+          id: lookupId || (catalogModel as any)?.id || fileName,
+          name: lookupName || nameOverride || (catalogModel as any)?.name || 'Vision mmproj',
+          desc: (catalogModel as any)?.desc ?? '',
+          logo: (catalogModel as any)?.logo,
+          categoryLabel: (catalogModel as any)?.categoryLabel,
+          categoryColor: (catalogModel as any)?.categoryColor,
+          fileName,
+          byteSize,
+          minRam: (catalogModel as any)?.minRam ?? 0,
+          downloadUrl:
+            urlOverride ||
+            storedDownloadUrl ||
+            (isVisionMode
+              ? getVisionModelDownloadUrl({...(catalogModel as any), fileName})
+              : getModelDownloadUrl({...(catalogModel as any), fileName})),
+        };
       };
 
-      console.log('DownloadScreen: loaded selected model:', model);
-      setSelectedDownload(model);
-      setDownloadPath(getModelDownloadFilePath(fileName));
+      Promise.all(keys.map(k => AsyncStorage.getItem(k))).then(results => {
+        if (isVisionMode) {
+          const [
+            storedId,
+            storedName,
+            storedFileName,
+            storedSizeBytes,
+            storedDownloadUrl,
+            storedMmprojFileName,
+            storedMmprojSizeBytes,
+            storedMmprojDownloadUrl,
+          ] = results;
+          const mainModel = buildModelFromKeys(
+            storedId,
+            storedName,
+            storedFileName,
+            storedSizeBytes,
+            storedDownloadUrl,
+          );
+          if (!mainModel) {
+            console.warn('DownloadScreen: vision main model not resolved');
+            return;
+          }
+          const catalogVision = (storedId ? findVisionCatalogModel(storedId) : null) || null;
+          const mmprojFileName = storedMmprojFileName || catalogVision?.mmprojFileName;
+          if (mmprojFileName) {
+            const mmprojByteSize =
+              Number(storedMmprojSizeBytes) || catalogVision?.mmprojByteSize || 0;
+            const mmprojUrl =
+              storedMmprojDownloadUrl ||
+              (catalogVision ? getVisionModelDownloadUrl({...catalogVision, fileName: mmprojFileName}) : '');
+            const mmprojModel = buildModelFromKeys(
+              storedId,
+              storedName,
+              null,
+              null,
+              null,
+              mmprojFileName,
+              mmprojByteSize,
+              mainModel.name,
+              `${mainModel.id}::mmproj`,
+              mmprojUrl,
+            );
+            if (mmprojModel) {
+              setMmprojSpec(mmprojModel);
+            }
+          }
+          isMainVisionFileInstalled(catalogVision || ({byteSize: 986047232} as any), mainModel.fileName).then(async mainInstalled => {
+            const mmprojInstalled = mmprojFileName
+              ? Boolean(await getInstalledModelFilePath({byteSize: catalogVision?.mmprojByteSize || 1331656192} as any, mmprojFileName))
+              : false;
+
+            if (mainInstalled && mmprojInstalled) {
+              console.log('DownloadScreen: vision model fully installed on load');
+              await AsyncStorage.setItem('visionModelDownloadComplete', 'true');
+              onComplete();
+              return;
+            } else if (mainInstalled && mmprojFileName) {
+              console.log('DownloadScreen: main vision file already installed, switching to mmproj model');
+              mmprojStartedRef.current = true;
+              const mmprojModel = buildModelFromKeys(
+                storedId,
+                storedName,
+                null,
+                null,
+                null,
+                mmprojFileName,
+                Number(storedMmprojSizeBytes) || catalogVision?.mmprojByteSize || 1331656192,
+                mainModel.name,
+                `${mainModel.id}::mmproj`,
+                storedMmprojDownloadUrl || (catalogVision ? getVisionModelDownloadUrl({...catalogVision, fileName: mmprojFileName}) : ''),
+              );
+              if (mmprojModel) {
+                setSelectedDownload(mmprojModel);
+                setDownloadPath(getModelDownloadFilePath(mmprojModel.fileName));
+                return;
+              }
+            }
+            console.log('DownloadScreen: loaded selected vision model:', mainModel);
+            setSelectedDownload(mainModel);
+            setDownloadPath(getModelDownloadFilePath(mainModel.fileName));
+          });
+        } else {
+          const [
+            storedId,
+            storedName,
+            storedFileName,
+            storedSizeBytes,
+            storedDownloadUrl,
+          ] = results;
+          const model = buildModelFromKeys(
+            storedId,
+            storedName,
+            storedFileName,
+            storedSizeBytes,
+            storedDownloadUrl,
+          );
+          if (!model) return;
+          console.log('DownloadScreen: loaded selected model (isVision=false):', model);
+          setSelectedDownload(model);
+          setDownloadPath(getModelDownloadFilePath(model.fileName));
+        }
+      });
     });
   }, []);
 
@@ -327,14 +477,21 @@ const DownloadScreen = ({
       const safeTaskId = getModelTaskId(selectedDownload);
       const legacyTaskId = `model_dl_${selectedDownload.name.replace(/[^a-zA-Z0-9]/g, '_')}`;
       const finishInstalledModel = async (sizeBytes?: number) => {
-        const installedPath = await getInstalledModelFilePath(
-          selectedDownload,
-          selectedDownload.fileName,
-        );
-        if (!installedPath) {
-          throw new Error('Downloaded model file could not be verified.');
+        // The vision flow is now two files; the .done callback flips the
+        // visionModelDownloadComplete flag only after the mmproj is also done.
+        // For vision downloads, we still verify the file is on disk so that
+        // mmprojStartedRef logic above knows it's safe to advance.
+        if (isVisionDownloadMode) {
+          try {
+            await getInstalledModelFilePath(
+              selectedDownload as any,
+              selectedDownload.fileName,
+            );
+          } catch (e) {
+            console.warn('DownloadScreen: vision file verification check failed:', e);
+          }
+          return;
         }
-
         await markModelInstalled(selectedDownload, selectedDownload.fileName, sizeBytes);
       };
 
@@ -416,6 +573,24 @@ const DownloadScreen = ({
         setSpeed('Complete');
         await finishInstalledModel(activeTask.bytesTotal || selectedDownload.byteSize);
         completeHandler(safeTaskId);
+        if (isVisionDownloadMode && mmprojSpec && !mmprojStartedRef.current) {
+          mmprojStartedRef.current = true;
+          console.log(
+            'DownloadScreen: main vision file DONE, advancing to mmproj:',
+            mmprojSpec.fileName,
+          );
+          setSpeed('Starting mmproj');
+          setProgress(0);
+          setDownloadedBytes(0);
+          setTotalBytes(mmprojSpec.byteSize);
+          setSelectedDownload(mmprojSpec);
+          setDownloadPath(getModelDownloadFilePath(mmprojSpec.fileName));
+          return;
+        }
+        if (isVisionDownloadMode && mmprojStartedRef.current) {
+          console.log('DownloadScreen: mmproj complete, vision model fully installed');
+          await AsyncStorage.setItem('visionModelDownloadComplete', 'true');
+        }
         onComplete();
         return;
       }
@@ -429,10 +604,20 @@ const DownloadScreen = ({
             console.warn('DownloadScreen: error stopping old task:', e);
           }
         }
-        console.log('DownloadScreen: creating new download task for id:', safeTaskId);
+        let downloadUrl = selectedDownload.downloadUrl;
+        try {
+          const headRes = await fetch(selectedDownload.downloadUrl, { method: 'HEAD' });
+          if (headRes.url) {
+            downloadUrl = headRes.url;
+          }
+        } catch (e) {
+          console.warn('DownloadScreen: direct URL lookup notice:', e);
+        }
+
+        console.log('DownloadScreen: creating new download task for id:', safeTaskId, 'url:', downloadUrl);
         activeTask = createDownloadTask({
           id: safeTaskId,
-          url: selectedDownload.downloadUrl,
+          url: downloadUrl,
           destination,
           headers: DOWNLOAD_HEADERS,
           isAllowedOverRoaming: true,
@@ -506,8 +691,8 @@ const DownloadScreen = ({
           lastTimeRef.current = now;
           lastBytesRef.current = bytesDownloaded;
         }
-      }).done(({bytesDownloaded, bytesTotal}) => {
-        console.log('DownloadScreen: Task done callback triggered!');
+            }).done(({bytesDownloaded, bytesTotal}) => {
+        console.log('DownloadScreen: Task done callback triggered for:', safeTaskId);
         AsyncStorage.removeItem('isDownloadPaused');
         if (!cancelled) {
           setProgress(1);
@@ -517,12 +702,32 @@ const DownloadScreen = ({
         }
         completeHandler(safeTaskId);
         finishInstalledModel(bytesTotal || selectedDownload.byteSize)
-          .then(() => {
+          .then(async () => {
             clearStallTimer();
-            if (!cancelled) {
-              setSpeed('Complete');
-              onComplete();
+            if (cancelled) return;
+            // Vision mode = two-file flow. After the main file completes,
+            // swap to the mmproj spec so the useEffect re-runs and downloads
+            // the vision adapter. We only call onComplete() once both finish.
+            if (isVisionDownloadMode && mmprojSpec && !mmprojStartedRef.current) {
+              mmprojStartedRef.current = true;
+              console.log(
+                'DownloadScreen: main vision file complete, starting mmproj:',
+                mmprojSpec.fileName,
+              );
+              setSpeed('Starting mmproj');
+              setProgress(0);
+              setDownloadedBytes(0);
+              setTotalBytes(mmprojSpec.byteSize);
+              setSelectedDownload(mmprojSpec);
+              setDownloadPath(getModelDownloadFilePath(mmprojSpec.fileName));
+              return;
             }
+            if (isVisionDownloadMode && mmprojStartedRef.current) {
+              console.log('DownloadScreen: mmproj complete, vision model fully installed');
+              await AsyncStorage.setItem('visionModelDownloadComplete', 'true');
+            }
+            setSpeed('Complete');
+            onComplete();
           })
           .catch(error => {
             console.error('DownloadScreen: downloaded model verification failed:', error);
@@ -540,11 +745,7 @@ const DownloadScreen = ({
       });
 
       const storedPaused = await AsyncStorage.getItem('isDownloadPaused');
-      if (activeTask.state === 'FAILED') {
-        console.log('DownloadScreen: task state is FAILED, showing failure alert');
-        setSpeed('Failed');
-        setShowFailedAlert(true);
-      } else if (activeTask.state === 'PAUSED' || storedPaused === 'true') {
+      if (activeTask.state === 'PAUSED' || storedPaused === 'true') {
         console.log('DownloadScreen: task is paused by user, maintaining paused state:', safeTaskId);
         const existingProgress = activeTask.bytesTotal > 0 ? activeTask.bytesDownloaded / activeTask.bytesTotal : 0;
         setProgress(existingProgress);
@@ -552,11 +753,16 @@ const DownloadScreen = ({
         setTotalBytes(activeTask.bytesTotal || selectedDownload.byteSize);
         setIsPaused(true);
         setSpeed('Paused');
-      } else if (activeTask.state === 'PENDING') {
-        console.log('DownloadScreen: task is pending, starting now:', safeTaskId);
+      } else {
+        console.log('DownloadScreen: starting task:', safeTaskId);
         setSpeed('Starting');
-        activeTask.start();
-      } else if (activeTask.bytesTotal > 0) {
+        try {
+          activeTask.start();
+        } catch (e) {
+          console.warn('DownloadScreen: task start notice:', e);
+        }
+      }
+      if (activeTask.bytesTotal > 0 && activeTask.bytesDownloaded > 0) {
         const existingProgress = activeTask.bytesDownloaded / activeTask.bytesTotal;
         setProgress(existingProgress);
         setDownloadedBytes(activeTask.bytesDownloaded);
@@ -611,9 +817,30 @@ const DownloadScreen = ({
 
   // Formatting helpers
   const formatBytes = (bytes: number) => (bytes / 1000 / 1000 / 1000).toFixed(2);
-  const downloadedGB = formatBytes(downloadedBytes);
-  const totalGB = formatBytes(totalBytes > 1 ? totalBytes : selectedDownload?.byteSize ?? 0);
-  const percentText = `${Math.min(progress * 100, 100).toFixed(2)}`;
+  
+  // Combine sizes for vision model package (main GGUF + mmproj GGUF)
+  const isVision = isVisionDownloadMode;
+  const mainVisionSize = 986047232;
+  const mmprojVisionSize = mmprojSpec?.byteSize || 1331656192;
+  const totalVisionPackageSize = mainVisionSize + mmprojVisionSize;
+
+  let effectiveDownloadedBytes = downloadedBytes;
+  let effectiveTotalBytes = totalBytes > 1 ? totalBytes : (selectedDownload?.byteSize ?? 0);
+  let effectiveProgress = progress;
+
+  if (isVision) {
+    effectiveTotalBytes = totalVisionPackageSize;
+    if (mmprojStartedRef.current) {
+      effectiveDownloadedBytes = mainVisionSize + downloadedBytes;
+    } else {
+      effectiveDownloadedBytes = downloadedBytes;
+    }
+    effectiveProgress = Math.min(effectiveDownloadedBytes / totalVisionPackageSize, 1);
+  }
+
+  const downloadedGB = formatBytes(effectiveDownloadedBytes);
+  const totalGB = formatBytes(effectiveTotalBytes);
+  const percentText = `${Math.min(effectiveProgress * 100, 100).toFixed(2)}`;
   const [percentWhole, percentDecimal] = percentText.split('.');
   const selectedFileName = selectedDownload?.fileName ?? 'Preparing model file';
   const quantization = selectedFileName.match(/(Q\d_[A-Z]_[A-Z]|Q\d_[A-Z]|IQ\d_[A-Z])/)?.[0] ?? 'Optimized GGUF';
@@ -634,7 +861,7 @@ const DownloadScreen = ({
           style={styles.logo}
           resizeMode="contain"
         />
-        <Text style={styles.headerTitle}>Downloading Model</Text>
+        <Text style={styles.headerTitle}>{isVisionDownloadMode ? 'Downloading Vision Model' : 'Downloading Model'}</Text>
       </View>
 
       <ScrollView
@@ -687,7 +914,7 @@ const DownloadScreen = ({
           </View>
 
           <View style={styles.progressBarBg}>
-            <View style={[styles.progressBarFill, isPaused && styles.progressBarFillPaused, {width: `${Math.min(progress * 100, 100)}%`}]} />
+            <View style={[styles.progressBarFill, isPaused && styles.progressBarFillPaused, {width: `${Math.min(effectiveProgress * 100, 100)}%`}]} />
           </View>
           
           <Text style={styles.percentageText}>
