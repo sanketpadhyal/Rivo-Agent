@@ -1,6 +1,7 @@
 import React from 'react';
 import Navbar from './components/Navbar';
 import Hero from './components/Hero';
+import Changelog from './components/Changelog';
 import Features from './components/Features';
 import Models from './components/Models';
 import Usage from './components/Usage';
@@ -17,6 +18,7 @@ function App() {
     <div className="app-landing">
       <Navbar />
       <Hero />
+      <Changelog />
       <Features />
       <Models />
       <Usage />
