@@ -34,7 +34,7 @@
 
 > [!IMPORTANT]
 > Read here how the LLM is actually working in your device:
-> https://rivo-agent.netlify.app/blog
+> https://rivoagent.sanketpadhyal.in/blog
 
 ## What's New in Rivo Agent v2.0.0
 
