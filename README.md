@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://www.sparse.in">
+  <a href="https://rivoagent.sanketpadhyal.in">
     <img src="rivo website/frontend/public/logo.png" alt="Rivo Agent logo" width="96" />
   </a>
 </p>
