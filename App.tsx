@@ -65,7 +65,7 @@ function App(): React.JSX.Element {
       }
       if (initializing) setInitializing(false);
     });
-    return subscriber; // unsubscribe on unmount
+    return subscriber;
   }, [initializing]);
 
   useEffect(() => {

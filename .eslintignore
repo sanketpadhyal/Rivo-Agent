@@ -1,0 +1,5 @@
+rivo website/
+node_modules/
+android/
+ios/
+src/screens/backup.jsx
